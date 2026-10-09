@@ -679,7 +679,9 @@ function ponSombra(estado, casilla) {
 function herir(estado, idInv, cuantas = 1) {
   const inv = estado.investigadores.find(i => i.id === idInv);
   if (!inv) return resultado(false, "no existe ese investigador");
-  inv.heridas = (inv.heridas || 0) + cuantas;
+  if (inv.muerto) return resultado(false, `${idInv} ya está muerto`);
+  if (inv.escapado) return resultado(false, `${idInv} ya ha escapado`);
+  inv.heridas = Math.min(4, (inv.heridas || 0) + cuantas);   // a la cuarta se muere
   const anuncios = [anuncia(estado, `${idInv} va por ${inv.heridas} Herida(s).`)];
   if (inv.heridas >= 4 && !inv.muerto) {
     inv.muerto = true;

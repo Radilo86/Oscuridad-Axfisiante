@@ -13027,7 +13027,9 @@ function ponSombra(estado, casilla) {
 function herir(estado, idInv, cuantas = 1) {
   const inv = estado.investigadores.find(i => i.id === idInv);
   if (!inv) return resultado(false, "no existe ese investigador");
-  inv.heridas = (inv.heridas || 0) + cuantas;
+  if (inv.muerto) return resultado(false, `${idInv} ya está muerto`);
+  if (inv.escapado) return resultado(false, `${idInv} ya ha escapado`);
+  inv.heridas = Math.min(4, (inv.heridas || 0) + cuantas);   // a la cuarta se muere
   const anuncios = [anuncia(estado, `${idInv} va por ${inv.heridas} Herida(s).`)];
   if (inv.heridas >= 4 && !inv.muerto) {
     inv.muerto = true;
@@ -13989,14 +13991,15 @@ function refrescar() {
     ? `Turnos de Investigadores · faltan ${pendientes.length}`
     : "Turno del Adversario";
   $("listaJugadores").innerHTML = J.jugadores.map((j, i) => {
+    const fuera = inv0 => inv0.muerto || inv0.escapado;
     const hecho = J.hechos.has(j.inv);
     const activo = J.turno === i;
     const inv = e.investigadores.find(x => x.id === j.inv);
-    const estados = (inv.estados || []).join(", ");
+    const estados = (inv.estados || []).concat(inv.muerto ? ["MUERTO"] : inv.escapado ? ["a salvo"] : []).join(", ");
     return `<button class="jugador${activo ? " activo" : ""}${hecho ? " hecho" : ""}"
-      data-i="${i}" ${hecho ? "disabled" : ""} style="border-left:4px solid ${colorDe(j.nombre)}">
+      data-i="${i}" ${hecho || fuera(inv) ? "disabled" : ""} style="border-left:4px solid ${colorDe(j.nombre)}">
       <b style="color:${colorDe(j.nombre)}">${j.nombre}</b><span>${j.inv} · ${inv.casilla}${inv.escalofrio ? " · Escalofrío" : ""}${estados ? " · " + estados : ""}</span>
-      <i>${hecho ? "turno jugado" : activo ? "en turno" : "pendiente"}</i></button>`;
+      <i>${inv.muerto ? "muerto" : inv.escapado ? "fuera" : hecho ? "turno jugado" : activo ? "en turno" : "pendiente"}</i></button>`;
   }).join("");
   $("listaJugadores").querySelectorAll(".jugador").forEach(b =>
     b.onclick = () => elegirJugador(+b.dataset.i));
@@ -14020,6 +14023,9 @@ function refrescar() {
 
 function elegirJugador(i) {
   if (J.hechos.has(J.jugadores[i].inv)) return;
+  const est = J.estado.investigadores.find(x => x.id === J.jugadores[i].inv);
+  if (est.muerto) { alerta(`${J.jugadores[i].nombre} está muerto.`); return; }
+  if (est.escapado) { alerta(`${J.jugadores[i].nombre} ya ha escapado.`); return; }
   J.turno = i;
   const inv = J.estado.investigadores.find(x => x.id === J.jugadores[i].inv);
   J.borrador = { destino: inv.casilla, linterna: null, barrido: null, zona: null, puertas: {} };
@@ -14028,6 +14034,9 @@ function elegirJugador(i) {
 }
 
 function pintarPanelTurno() {
+  if (J.turno === null || !J.borrador) {
+    $("panelTurno").hidden = true; $("panelTurno").innerHTML = ""; return;   // sin botones huérfanos
+  }
   const j = J.jugadores[J.turno], b = J.borrador;
   const encendible = J.estado.mapa.casillas.get(b.destino);
   $("panelTurno").innerHTML = `
@@ -14053,7 +14062,8 @@ function pintarPanelTurno() {
       <button class="mini" id="btnPasadizo">Pasadizo</button></div>
     <div class="campo"><span>Heridas</span>
       <b>${(J.estado.investigadores.find(x => x.id === j.inv).heridas || 0)} de 4</b>
-      <button class="mini" id="btnHerida">+1 Herida</button></div>
+      ${(J.estado.investigadores.find(x => x.id === j.inv).heridas || 0) < 4
+        ? '<button class="mini" id="btnHerida">+1 Herida</button>' : "<i>ha muerto</i>"}</div>
     ${encendible && encendible.type === "terminal"
       ? `<div class="campo"><span>Ordenador</span><button class="mini" id="btnEvidencia">Entregar Evidencia</button></div>` : ""}
     ${J.estado.escape ? `<div class="campo"><span>Objetivo</span><button class="mini" id="btnEscapar">Ha escapado</button></div>` : ""}
@@ -14128,9 +14138,13 @@ function pintarPanelTurno() {
     }
   };
   $("btnSoltar").onclick = () => { J.turno = null; J.borrador = null; modo = null; seleccion.clear(); refrescar(); pista(); };
-  $("btnHerida").onclick = () => {
+  if ($("btnHerida")) $("btnHerida").onclick = () => {
     const r = M.herir(J.estado, j.inv);
+    if (!r.ok) { alerta(r.motivo); return; }
     r.anuncios.forEach(t => apunta("Heridas", t));
+    if (J.estado.investigadores.find(x => x.id === j.inv).muerto) {
+      J.hechos.add(j.inv); J.turno = null; J.borrador = null; modo = null;
+    }
     refrescar(); comprobarFinal();
   };
   if ($("btnEvidencia")) $("btnEvidencia").onclick = () => {
@@ -14149,6 +14163,7 @@ function pintarPanelTurno() {
 }
 
 function cambiarPuerta(id) {
+  if (J.turno === null) return;
   const e = J.estado, actual = e.puertas[id], nombre = J.jugadores[J.turno].nombre;
   if (actual === "destruida" || actual === "falsa") { alerta("Esa puerta ya no se puede manipular."); return; }
   if (actual === "dañada") {                       // abrirla la destruye
@@ -14167,6 +14182,7 @@ function cambiarPuerta(id) {
 }
 
 function validarLinterna() {
+  if (J.turno === null || !J.borrador) { modo = null; return; }
   const j = J.jugadores[J.turno], b = J.borrador;
   if (!seleccion.size) { alerta("No has marcado ninguna casilla."); return; }
   const tapadas = [...seleccion].filter(id => !M.hayVision(J.estado, b.destino, id));
@@ -14203,6 +14219,7 @@ function revelarPorLuz(anunciosPrevios) {
 }
 
 function terminarTurno() {
+  if (J.turno === null || !J.borrador) return;
   const j = J.jugadores[J.turno], b = J.borrador;
   const resumen = [
     `Acaba en ${b.destino}.`,
@@ -14399,6 +14416,9 @@ cv.addEventListener("pointerdown", ev => {
   if (!n || !modo || ev.button !== 0) {
     arrastre = { sx: ev.clientX, sy: ev.clientY, vx: vista.x, vy: vista.y };
     return;
+  }
+  if ((modo === "posicion" || modo === "linterna") && (J.turno === null || !J.borrador)) {
+    modo = null; pista(); return;                 // no hay turno abierto: no hay nada que marcar
   }
   if (modo === "posicion") { J.borrador.destino = n.id; modo = null; pista(); refrescar(); }
   else if (modo === "linterna") { seleccion.has(n.id) ? seleccion.delete(n.id) : seleccion.add(n.id); dibujar(); }
