@@ -95,6 +95,12 @@ padding:12px 16px;font-size:14px;z-index:20;line-height:1.4}
       <select id="numInv"><option>2</option><option>3</option><option selected>4</option></select></label>
   </div>
 
+  <div class="bloque" id="bloquePdi">
+    <h3>Puntos de Interés</h3>
+    <p style="margin-top:0;font-size:13.5px" id="textoPdi"></p>
+    <div id="listaPdi"></div>
+  </div>
+
   <div class="bloque">
     <h3>Jugadores</h3>
     <p style="margin-top:0;font-size:13.5px">El nombre es para saber de quién es cada turno. Cada uno solo juega una vez por ronda.</p>
@@ -12826,7 +12832,7 @@ function usarCuerdas(estado, rnd) {
   if (d.cuerdas > 3) return resultado(false, "las Cuerdas ya se han gastado");
   const cerca = [...aMenosDe(estado, estado.adversario.casilla, 3), estado.adversario.casilla];
   const donde = cerca[Math.floor((rnd ? rnd() : Math.random()) * cerca.length)];
-  ponSombra(estado, donde);
+  ponSombra(estado, donde, true);          // las Cuerdas piden una bocabajo
   return resultado(true, null, [anuncia(estado,
     `Sombra bocabajo en ${donde}. Quedan ${3 - d.cuerdas} usos de las Cuerdas.`)]);
 }
@@ -13136,7 +13142,8 @@ function crearPartida(opciones) {
     linternas: [],                                     // [{de, casillas:[]}]
     brillantes: new Set(),                             // casillas brillantes sueltas
     ruido: new Set(),                                  // claves de ventana con ficha de Ruido
-    sombras: [],                                       // puede haber varias en el tablero
+    sombra: null,              // la bocarriba: solo hay una y se traslada
+    sombrasOcultas: [],        // las bocabajo de las Cuerdas deshilachadas
     evidencias: 0,
     evidenciaNecesaria: EVIDENCIA_NECESARIA[(opciones.investigadores || []).length] ?? 5,
     escape: null,
@@ -13151,8 +13158,21 @@ function crearPartida(opciones) {
   return estado;
 }
 
-function ponSombra(estado, casilla) {
-  if (!estado.sombras.includes(casilla)) estado.sombras.push(casilla);
+/**
+ * El Adversario tiene 1 ficha de Sombra bocarriba. Si ya estaba en el tablero
+ * cuando toca colocarla, se traslada: no deja un rastro de varias.
+ * Las bocabajo (Cuerdas deshilachadas) son fichas aparte y sí se acumulan.
+ */
+function ponSombra(estado, casilla, bocabajo) {
+  if (bocabajo) {
+    if (!estado.sombrasOcultas.includes(casilla)) estado.sombrasOcultas.push(casilla);
+  } else {
+    estado.sombra = casilla;
+  }
+}
+/** Todas las que hay en el tablero, para dibujarlas y anunciarlas. */
+function sombrasEnTablero(estado) {
+  return (estado.sombra ? [estado.sombra] : []).concat(estado.sombrasOcultas);
 }
 /** Heridas. A la cuarta, el Investigador muere y el Carnicero gana. */
 function herir(estado, idInv, cuantas = 1) {
@@ -13188,10 +13208,14 @@ function entregarEvidencia(estado, idInv, cuantas = 1, casilla) {
   const donde = casilla || inv.casilla;
   if (estado.mapa.casillas.get(donde)?.type !== "terminal")
     return resultado(false, "hay que estar en una casilla de Ordenador");
+  if (cuantas < 1) return resultado(false, "hay que entregar al menos 1");
+  if (estado.evidencias + cuantas > 5)
+    return resultado(false, "solo hay 5 fichas de Evidencia en el tablero");
   estado.evidencias += cuantas;
-  const anuncios = [anuncia(estado, `Evidencia entregada: ${estado.evidencias} de ${estado.evidenciaNecesaria}.`)];
+  const anuncios = [anuncia(estado,
+    `${idInv} entrega ${cuantas} Evidencia(s): ${estado.evidencias} de ${estado.evidenciaNecesaria}.`)];
   if (estado.evidencias >= estado.evidenciaNecesaria && !estado.escape)
-    anuncios.push(anuncia(estado, "Ya podéis elegir Objetivo de escape."));
+    anuncios.push(anuncia(estado, "Ya podéis elegir Objetivo de escape cuando queráis."));
   return resultado(true, null, anuncios);
 }
 
@@ -13219,9 +13243,10 @@ function iniciarTurnoAdversario(estado) {
     anuncios.push(anuncia(estado, `Retirad las fichas de Ojo Malévolo de ${estado.ojos.join(", ")}.`));
     estado.ojos = [];
   }
-  if (estado.perfil.retiraSombraAlEmpezar && estado.sombras.length) {
-    anuncios.push(anuncia(estado, `Retirad las fichas de Sombra de ${estado.sombras.join(", ")}.`));
-    estado.sombras = [];
+  const enTablero = sombrasEnTablero(estado);
+  if (estado.perfil.retiraSombraAlEmpezar && enTablero.length) {
+    anuncios.push(anuncia(estado, `Retirad las fichas de Sombra de ${enTablero.join(", ")}.`));
+    estado.sombra = null; estado.sombrasOcultas = [];
   }
   const a = estado.adversario;
   a.mp = estado.perfil.mp;
@@ -13400,6 +13425,8 @@ function romperPuerta(estado, id) {
     return resultado(false, `la puerta está a ${d === null ? "ninguna" : d} casillas y el alcance es ${estado.perfil.romperPuertaAlcance}`);
   const antes = estado.puertas[id] || "abierta";
   if (antes === "destruida") return resultado(false, "esa puerta ya está destruida");
+  if (estado.investigadores.some(i => i.casilla === id && !i.muerto && !i.escapado))
+    return resultado(false, "hay un Investigador en esa casilla de Puerta");
   const despues = antes === "dañada" ? "destruida" : "dañada";
   estado.puertas[id] = despues;
   a.accionesUsadas.add("romper");
@@ -13551,7 +13578,8 @@ function parteDelTurno(estado, anuncios) {
   const a = estado.adversario;
   const partes = anuncios.slice();
   if (!a.oculto) partes.push(`El Adversario está a la vista en ${a.casilla}.`);
-  else if (estado.sombras.length) partes.push(`Sombra en ${estado.sombras.join(", ")}.`);
+  else if (sombrasEnTablero(estado).length)
+    partes.push(`Sombra en ${sombrasEnTablero(estado).join(", ")}.`);
   return partes;
 }
 /** Lo que nunca debe salir de detrás de la pantalla. */
@@ -13567,7 +13595,7 @@ const api = {
   crearPartida, prepararMapa,
   luzDe, hayVision, distancia, aMenosDe, vecinasDe, clave,
   iniciarTurnoAdversario, sprint, mover, puedeAcechar, acechar,
-  romperPuerta, desaparecer, finDeRonda, puedeAtacar, atacar, CARTAS_ATAQUE,
+  romperPuerta, desaparecer, finDeRonda, puedeAtacar, atacar, CARTAS_ATAQUE, sombrasEnTablero,
   HABILIDADES, habilidadDisponible, usarHabilidad, recargar, terminarTurnoAdversario,
   ESCAPES, EVIDENCIA_NECESARIA, manoDeEscape, elegirEscape,
   herir, escapar, entregarEvidencia, colocacionInicial, cerrarPuerta,
@@ -13685,8 +13713,19 @@ function ventanasDeLaRuta(estado, desde, ruta) {
 }
 /** Casillas que hay que vigilar una vez elegido el Objetivo. */
 function fichasDelObjetivo(estado) {
-  if (!estado.escape || !estado.escape.fichas) return [];
-  return Object.values(estado.escape.fichas).filter(Boolean);
+  if (!estado.escape) return [];
+  const f = Object.values(estado.escape.fichas || {}).filter(Boolean);
+  // con la salida abierta, lo que importa es taparla
+  if (estado.escape.progreso && estado.escape.progreso.escapeDisponible) {
+    if (estado.escape.tipo === "camion") return ["10", "306"];
+    if (estado.escape.tipo === "caja") return [estado.escape.fichas.salida];
+  }
+  return f;
+}
+/** ¿Tienen ya el Garfio listo? Entonces acercarse es suicida. */
+function garfioEnJuego(estado) {
+  const d = estado.destierro;
+  return !!(d && d.exhumada && d.arde === null);
 }
 
 /** Cuánto vale quedarse en una casilla al terminar el turno. */
@@ -13703,6 +13742,11 @@ function valorPosicion(estado, casilla, nivel, tabla, distInv) {
     // compartir casilla no cuenta como adyacente
     if (cerca === 1) v += (estado.adversario.acecho >= 1 ? 45 : 8) * nivel.agresion;
     else if (cerca === 0) v += 4 * nivel.agresion;
+    // pero si ya tienen el Garfio, ponerse al lado es regalarles la partida
+    if (garfioEnJuego(estado)) {
+      if (cerca !== null && cerca <= 1) v -= 140;
+      else if (cerca === 2) v -= 20;
+    }
   }
   // posiciones desde las que mañana se podrá Acechar
   const futuros = acechablesDesde(tabla, casilla).length;
@@ -13868,7 +13912,8 @@ function jugarTurno(estado, opciones = {}) {
 
   // ya colocado: si alguien ha quedado adyacente y hay Acecho que gastar, atacar.
   // cuanto más duro el nivel, más se ceba con quien está más cerca de morir
-  const victimas = estado.investigadores.slice().sort((x, y) =>
+  const peligro = garfioEnJuego(estado);
+  const victimas = (peligro ? [] : estado.investigadores.slice()).sort((x, y) =>
     nivel.remata ? (y.heridas || 0) - (x.heridas || 0) : rnd() - 0.5);
   for (const inv of victimas) {
     if (estado.adversario.acecho < 1) break;
@@ -13915,7 +13960,7 @@ function jugarTurno(estado, opciones = {}) {
                       ruta: (p.rutaIda || []).concat(p.rutaVuelta || []) } };
 }
 
-const api = { NIVELES, CARAS_SPRINT, azar, ventanasDeLaRuta, fichasDelObjetivo, alcance, mapaDeAcecho, acechablesDesde, valorPosicion, planes, elegir, jugarTurno };
+const api = { NIVELES, CARAS_SPRINT, azar, ventanasDeLaRuta, fichasDelObjetivo, garfioEnJuego, alcance, mapaDeAcecho, acechablesDesde, valorPosicion, planes, elegir, jugarTurno };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else raiz.IA_TSD = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
@@ -13950,6 +13995,19 @@ let arrastre = null;
 
 function pintarPreparacion() {
   const n = +$("numInv").value;
+  const cuantos = { 2: 2, 3: 1, 4: 0 }[n] ?? 0;
+  const pdi = MAPA.nodes.filter(x => x.type === "poi").map(x => x.id);
+  $("bloquePdi").hidden = !cuantos;
+  $("textoPdi").textContent = cuantos
+    ? `Con ${n} investigadores empezáis con ${cuantos} ficha(s) de Punto de Interés y su Objeto. Elegid de cuáles.`
+    : "";
+  $("listaPdi").innerHTML = pdi.map(id =>
+    `<label class="ck" style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;cursor:pointer">
+      <input type="checkbox" class="pdiElegido" value="${id}"> ${id}</label>`).join("");
+  $("listaPdi").querySelectorAll(".pdiElegido").forEach(c => c.onchange = () => {
+    const marcados = [...document.querySelectorAll(".pdiElegido:checked")];
+    if (marcados.length > cuantos) { c.checked = false; alerta(`Solo podéis quedaros ${cuantos}.`); }
+  });
   const c = $("jugadores");
   c.innerHTML = "";
   for (let i = 0; i < n; i++) {
@@ -13964,7 +14022,7 @@ function pintarPreparacion() {
 }
 
 /** Preparación del Adversario: Evidencia, Puntos de Interés y Objetos Médicos. */
-function prepararOculto(estado, nInv, rnd) {
+function prepararOculto(estado, nInv, rnd, opcionesPdi) {
   const pasos = [], secreto = [];
   const generales = id => {
     const n = estado.mapa.casillas.get(id);
@@ -13982,12 +14040,9 @@ function prepararOculto(estado, nInv, rnd) {
   // fichas de Punto de Interés: General a 2 casillas o menos de su PdI
   const pdi = [...estado.mapa.casillas.values()].filter(n => n.type === "poi");
   const sobran = { 2: 2, 3: 1, 4: 0 }[nInv] ?? 0;
-  const elegidos = pdi.slice();
-  for (let i = 0; i < sobran && elegidos.length; i++) {
-    const k = Math.floor(rnd() * elegidos.length);
-    pasos.push(`Los Investigadores se quedan la ficha del Punto de Interés de ${elegidos[k].id}.`);
-    elegidos.splice(k, 1);
-  }
+  const elegidos = pdi.filter(p => !(opcionesPdi || []).includes(p.id));
+  for (const id of (opcionesPdi || []))
+    pasos.push(`Os quedáis la ficha del Punto de Interés de ${id} con su Objeto.`);
   for (const p of elegidos) {
     const cerca = [...M.aMenosDe(estado, p.id, 2)].filter(generales);
     if (!cerca.length) continue;
@@ -13998,12 +14053,22 @@ function prepararOculto(estado, nInv, rnd) {
   // Objetos Médicos: visibles, los colocan los jugadores
   const med = [...estado.mapa.casillas.values()].filter(n => n.type === "medical").map(n => n.id);
   const cuantos = { 2: 0, 3: 1, 4: 2 }[nInv] ?? 0;
-  if (cuantos) pasos.push(`Colocad ${cuantos} Objeto(s) Médico(s) en: ${med.slice(0, cuantos).join(" y ")}.`);
+  if (cuantos === 1) pasos.push(`Colocad 1 Objeto Médico donde prefiráis: ${med.join(" o ")}.`);
+  else if (cuantos === 2) pasos.push(`Colocad los 2 Objetos Médicos, uno en cada sitio: ${med.join(" y ")}.`);
   return { pasos, secreto };
 }
 
+let J0pdi = [];           // Puntos de Interés que los Investigadores se quedan
 function comenzar() {
   const n = +$("numInv").value;
+  const cuantos = { 2: 2, 3: 1, 4: 0 }[n] ?? 0;
+  const marcados = [...document.querySelectorAll(".pdiElegido:checked")].map(c => c.value);
+  if (marcados.length !== cuantos) {
+    alerta(`Con ${n} investigadores os quedáis ${cuantos} ficha(s) de Punto de Interés. ` +
+           `Marcad exactamente ${cuantos} antes de empezar.`);
+    return;
+  }
+  J0pdi = marcados;
   const jugadores = [];
   for (let i = 0; i < n; i++) {
     const nombre = $("jn" + i).value.trim() || `Jugador ${i + 1}`;
@@ -14027,7 +14092,7 @@ function comenzar() {
   estado.ocultos = [];
   const conEventos = $("conEventos").checked;
   estado.mazoEventos = conEventos ? M.montarEventos(rnd) : null;
-  const prep = prepararOculto(estado, n, rnd);
+  const prep = prepararOculto(estado, n, rnd, J0pdi);
   // el manual le deja colocarse donde quiera: lo sorteamos, lejos de la entrada
   estado.adversario.casilla = M.colocacionInicial(estado, rnd);
 
@@ -14166,14 +14231,15 @@ function refrescar() {
     b.onclick = () => elegirJugador(+b.dataset.i));
 
   $("estadoAdv").innerHTML = `
-    <div class="dato"><span>Sombras</span><b>${e.sombras.length ? e.sombras.join(", ") : "—"}</b></div>
+    <div class="dato"><span>Sombras</span><b>${M.sombrasEnTablero(e).length ? M.sombrasEnTablero(e).join(", ") : "—"}</b></div>
     <div class="dato"><span>Ruido</span><b>${e.ruido.size || "—"}</b></div>
     <div class="dato"><span>Adversario</span><b>${e.adversario.oculto ? "Oculto" : "Revelado en " + e.adversario.casilla}</b></div>
     <div class="dato"><span>Puertas tocadas</span><b>${Object.entries(e.puertas).filter(([, v]) => v !== "abierta").map(([k, v]) => k + " " + v).join(", ") || "—"}</b></div>`;
 
-  const toca = e.evidencias >= e.evidenciaNecesaria && !e.escape;
-  $("btnObjetivo").hidden = !toca;
-  $("btnAdversario").disabled = pendientes.length > 0 || toca;
+  // pueden elegir Objetivo cuando quieran, y mientras tanto seguir entregando
+  // Evidencia de más para sacar recompensas extra
+  $("btnObjetivo").hidden = !(e.evidencias >= e.evidenciaNecesaria && !e.escape);
+  $("btnAdversario").disabled = pendientes.length > 0;
   pintarObjetivo();
   $("panelTurno").hidden = J.turno === null;
   if (J.turno !== null) pintarPanelTurno();
@@ -14309,11 +14375,28 @@ function pintarPanelTurno() {
     refrescar(); comprobarFinal();
   };
   if ($("btnEvidencia")) $("btnEvidencia").onclick = () => {
-    const r = M.entregarEvidencia(J.estado, j.inv, 1, b.destino);
-    if (!r.ok) { alerta(r.motivo); return; }
-    reparte(r.anuncios, j.nombre);
-    elegirRecompensa(j.nombre);
-    refrescar();
+    const quedan = 5 - J.estado.evidencias;
+    if (quedan <= 0) { alerta("Ya se han entregado las 5 Evidencias del tablero."); return; }
+    $("modalTitulo").textContent = "¿Cuántas Evidencias entrega?";
+    $("modalTitulo").style.color = "";
+    $("modalCuerpo").innerHTML =
+      `<p>Entregar Evidencia es una sola Acción Involucrada y podéis soltar las que llevéis de golpe. ` +
+      `Por cada una elegiréis 1 recompensa.</p>` +
+      Array.from({ length: quedan }, (_, i) =>
+        `<button class="btn cuantas" data-n="${i + 1}" style="width:100%;margin-bottom:6px">${i + 1}</button>`).join("");
+    $("modalOk").hidden = true; $("modalCancelar").hidden = false;
+    $("modal").hidden = false;
+    $("modalCancelar").onclick = () => { $("modal").hidden = true; $("modalOk").hidden = false; };
+    $("modalCuerpo").querySelectorAll(".cuantas").forEach(bt => bt.onclick = () => {
+      const n = +bt.dataset.n;
+      $("modal").hidden = true; $("modalOk").hidden = false;
+      const r = M.entregarEvidencia(J.estado, j.inv, n, b.destino);
+      if (!r.ok) { alerta(r.motivo); return; }
+      reparte(r.anuncios, j.nombre);
+      let quedanPremios = n;
+      const siguiente = () => { if (quedanPremios-- > 0) elegirRecompensa(j.nombre, siguiente); else refrescar(); };
+      siguiente();
+    });
   };
   if ($("btnEscapar")) $("btnEscapar").onclick = () => {
     const esc = J.estado.escape;
@@ -14403,7 +14486,7 @@ function terminarTurno() {
 }
 
 /** Por cada Evidencia entregada se elige 1 recompensa de la lista del manual. */
-function elegirRecompensa(quien) {
+function elegirRecompensa(quien, alTerminar) {
   const libres = M.recompensasDisponibles(J.estado);
   $("modalTitulo").textContent = "Elegid 1 recompensa por esa Evidencia";
   $("modalTitulo").style.color = "";
@@ -14412,12 +14495,16 @@ function elegirRecompensa(quien) {
     `${M.RECOMPENSAS[n].repetible ? "" : " <small>(una vez por partida)</small>"}</button>`).join("");
   $("modalOk").hidden = true; $("modalCancelar").hidden = false;
   $("modal").hidden = false;
-  $("modalCancelar").onclick = () => { $("modal").hidden = true; $("modalOk").hidden = false; };
+  $("modalCancelar").onclick = () => {
+    $("modal").hidden = true; $("modalOk").hidden = false;
+    if (alTerminar) alTerminar(); else refrescar();
+  };
   $("modalCuerpo").querySelectorAll(".premio").forEach(b => b.onclick = () => {
     const r = M.tomarRecompensa(J.estado, b.dataset.n);
     $("modal").hidden = true; $("modalOk").hidden = false;
     reparte(r.anuncios, "Hallazgo");
-    refrescar(); guardar();
+    guardar();
+    if (alTerminar) alTerminar(); else refrescar();
   });
 }
 
@@ -14629,7 +14716,8 @@ function dibujar() {
   }
   for (const c of (e.delatoras || [])) marca(c, "#C9C06F", "♪");
   for (const c of (e.barricadas || [])) marca(c, "#8A9A8C", "▮");
-  for (const s of e.sombras) marca(s, "#8C7BD6", "S");
+  if (e.sombra) marca(e.sombra, "#8C7BD6", "S");
+  for (const s of (e.sombrasOcultas || [])) marca(s, "#5E4FA0", "s");
   for (const o of (e.ojos || [])) marca(o, "#C58BE0", "\u25c9");
   for (const j of J.jugadores) {
     const inv = e.investigadores.find(x => x.id === j.inv);
@@ -14694,7 +14782,7 @@ function serializar() {
       },
       puertas: e.puertas, ventanas: e.ventanas, ocultos: e.ocultos,
       zonasEncendidas: [...e.zonasEncendidas], linternas: e.linternas,
-      ruido: [...e.ruido], sombras: e.sombras, ojos: e.ojos || [],
+      ruido: [...e.ruido], sombra: e.sombra, sombrasOcultas: e.sombrasOcultas || [], ojos: e.ojos || [],
       evidencias: e.evidencias, escape: e.escape, desenlace: e.desenlace,
       lucesFundidas: [...e.lucesFundidas], delatoras: e.delatoras, barricadas: e.barricadas,
       zonasAtenuadas: [...e.zonasAtenuadas], pasadizos: e.pasadizos,
@@ -14717,7 +14805,8 @@ function recuperar(texto) {
     ronda: d.estado.ronda, puertas: d.estado.puertas, ventanas: d.estado.ventanas,
     ocultos: d.estado.ocultos, zonasEncendidas: new Set(d.estado.zonasEncendidas),
     linternas: d.estado.linternas, ruido: new Set(d.estado.ruido),
-    sombras: d.estado.sombras || [], ojos: d.estado.ojos || [],
+    sombra: d.estado.sombra || null, sombrasOcultas: d.estado.sombrasOcultas || [],
+    ojos: d.estado.ojos || [],
     lucesFundidas: new Set(d.estado.lucesFundidas || []),
     zonasAtenuadas: new Set(d.estado.zonasAtenuadas || []), pasadizos: d.estado.pasadizos || [],
     delatoras: d.estado.delatoras || [], barricadas: d.estado.barricadas || [],

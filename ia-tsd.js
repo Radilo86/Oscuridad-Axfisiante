@@ -101,8 +101,19 @@ function ventanasDeLaRuta(estado, desde, ruta) {
 }
 /** Casillas que hay que vigilar una vez elegido el Objetivo. */
 function fichasDelObjetivo(estado) {
-  if (!estado.escape || !estado.escape.fichas) return [];
-  return Object.values(estado.escape.fichas).filter(Boolean);
+  if (!estado.escape) return [];
+  const f = Object.values(estado.escape.fichas || {}).filter(Boolean);
+  // con la salida abierta, lo que importa es taparla
+  if (estado.escape.progreso && estado.escape.progreso.escapeDisponible) {
+    if (estado.escape.tipo === "camion") return ["10", "306"];
+    if (estado.escape.tipo === "caja") return [estado.escape.fichas.salida];
+  }
+  return f;
+}
+/** ¿Tienen ya el Garfio listo? Entonces acercarse es suicida. */
+function garfioEnJuego(estado) {
+  const d = estado.destierro;
+  return !!(d && d.exhumada && d.arde === null);
 }
 
 /** Cuánto vale quedarse en una casilla al terminar el turno. */
@@ -119,6 +130,11 @@ function valorPosicion(estado, casilla, nivel, tabla, distInv) {
     // compartir casilla no cuenta como adyacente
     if (cerca === 1) v += (estado.adversario.acecho >= 1 ? 45 : 8) * nivel.agresion;
     else if (cerca === 0) v += 4 * nivel.agresion;
+    // pero si ya tienen el Garfio, ponerse al lado es regalarles la partida
+    if (garfioEnJuego(estado)) {
+      if (cerca !== null && cerca <= 1) v -= 140;
+      else if (cerca === 2) v -= 20;
+    }
   }
   // posiciones desde las que mañana se podrá Acechar
   const futuros = acechablesDesde(tabla, casilla).length;
@@ -284,7 +300,8 @@ function jugarTurno(estado, opciones = {}) {
 
   // ya colocado: si alguien ha quedado adyacente y hay Acecho que gastar, atacar.
   // cuanto más duro el nivel, más se ceba con quien está más cerca de morir
-  const victimas = estado.investigadores.slice().sort((x, y) =>
+  const peligro = garfioEnJuego(estado);
+  const victimas = (peligro ? [] : estado.investigadores.slice()).sort((x, y) =>
     nivel.remata ? (y.heridas || 0) - (x.heridas || 0) : rnd() - 0.5);
   for (const inv of victimas) {
     if (estado.adversario.acecho < 1) break;
@@ -331,7 +348,7 @@ function jugarTurno(estado, opciones = {}) {
                       ruta: (p.rutaIda || []).concat(p.rutaVuelta || []) } };
 }
 
-const api = { NIVELES, CARAS_SPRINT, azar, ventanasDeLaRuta, fichasDelObjetivo, alcance, mapaDeAcecho, acechablesDesde, valorPosicion, planes, elegir, jugarTurno };
+const api = { NIVELES, CARAS_SPRINT, azar, ventanasDeLaRuta, fichasDelObjetivo, garfioEnJuego, alcance, mapaDeAcecho, acechablesDesde, valorPosicion, planes, elegir, jugarTurno };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else raiz.IA_TSD = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

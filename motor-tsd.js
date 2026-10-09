@@ -474,7 +474,7 @@ function usarCuerdas(estado, rnd) {
   if (d.cuerdas > 3) return resultado(false, "las Cuerdas ya se han gastado");
   const cerca = [...aMenosDe(estado, estado.adversario.casilla, 3), estado.adversario.casilla];
   const donde = cerca[Math.floor((rnd ? rnd() : Math.random()) * cerca.length)];
-  ponSombra(estado, donde);
+  ponSombra(estado, donde, true);          // las Cuerdas piden una bocabajo
   return resultado(true, null, [anuncia(estado,
     `Sombra bocabajo en ${donde}. Quedan ${3 - d.cuerdas} usos de las Cuerdas.`)]);
 }
@@ -784,7 +784,8 @@ function crearPartida(opciones) {
     linternas: [],                                     // [{de, casillas:[]}]
     brillantes: new Set(),                             // casillas brillantes sueltas
     ruido: new Set(),                                  // claves de ventana con ficha de Ruido
-    sombras: [],                                       // puede haber varias en el tablero
+    sombra: null,              // la bocarriba: solo hay una y se traslada
+    sombrasOcultas: [],        // las bocabajo de las Cuerdas deshilachadas
     evidencias: 0,
     evidenciaNecesaria: EVIDENCIA_NECESARIA[(opciones.investigadores || []).length] ?? 5,
     escape: null,
@@ -799,8 +800,21 @@ function crearPartida(opciones) {
   return estado;
 }
 
-function ponSombra(estado, casilla) {
-  if (!estado.sombras.includes(casilla)) estado.sombras.push(casilla);
+/**
+ * El Adversario tiene 1 ficha de Sombra bocarriba. Si ya estaba en el tablero
+ * cuando toca colocarla, se traslada: no deja un rastro de varias.
+ * Las bocabajo (Cuerdas deshilachadas) son fichas aparte y sí se acumulan.
+ */
+function ponSombra(estado, casilla, bocabajo) {
+  if (bocabajo) {
+    if (!estado.sombrasOcultas.includes(casilla)) estado.sombrasOcultas.push(casilla);
+  } else {
+    estado.sombra = casilla;
+  }
+}
+/** Todas las que hay en el tablero, para dibujarlas y anunciarlas. */
+function sombrasEnTablero(estado) {
+  return (estado.sombra ? [estado.sombra] : []).concat(estado.sombrasOcultas);
 }
 /** Heridas. A la cuarta, el Investigador muere y el Carnicero gana. */
 function herir(estado, idInv, cuantas = 1) {
@@ -836,10 +850,14 @@ function entregarEvidencia(estado, idInv, cuantas = 1, casilla) {
   const donde = casilla || inv.casilla;
   if (estado.mapa.casillas.get(donde)?.type !== "terminal")
     return resultado(false, "hay que estar en una casilla de Ordenador");
+  if (cuantas < 1) return resultado(false, "hay que entregar al menos 1");
+  if (estado.evidencias + cuantas > 5)
+    return resultado(false, "solo hay 5 fichas de Evidencia en el tablero");
   estado.evidencias += cuantas;
-  const anuncios = [anuncia(estado, `Evidencia entregada: ${estado.evidencias} de ${estado.evidenciaNecesaria}.`)];
+  const anuncios = [anuncia(estado,
+    `${idInv} entrega ${cuantas} Evidencia(s): ${estado.evidencias} de ${estado.evidenciaNecesaria}.`)];
   if (estado.evidencias >= estado.evidenciaNecesaria && !estado.escape)
-    anuncios.push(anuncia(estado, "Ya podéis elegir Objetivo de escape."));
+    anuncios.push(anuncia(estado, "Ya podéis elegir Objetivo de escape cuando queráis."));
   return resultado(true, null, anuncios);
 }
 
@@ -867,9 +885,10 @@ function iniciarTurnoAdversario(estado) {
     anuncios.push(anuncia(estado, `Retirad las fichas de Ojo Malévolo de ${estado.ojos.join(", ")}.`));
     estado.ojos = [];
   }
-  if (estado.perfil.retiraSombraAlEmpezar && estado.sombras.length) {
-    anuncios.push(anuncia(estado, `Retirad las fichas de Sombra de ${estado.sombras.join(", ")}.`));
-    estado.sombras = [];
+  const enTablero = sombrasEnTablero(estado);
+  if (estado.perfil.retiraSombraAlEmpezar && enTablero.length) {
+    anuncios.push(anuncia(estado, `Retirad las fichas de Sombra de ${enTablero.join(", ")}.`));
+    estado.sombra = null; estado.sombrasOcultas = [];
   }
   const a = estado.adversario;
   a.mp = estado.perfil.mp;
@@ -1048,6 +1067,8 @@ function romperPuerta(estado, id) {
     return resultado(false, `la puerta está a ${d === null ? "ninguna" : d} casillas y el alcance es ${estado.perfil.romperPuertaAlcance}`);
   const antes = estado.puertas[id] || "abierta";
   if (antes === "destruida") return resultado(false, "esa puerta ya está destruida");
+  if (estado.investigadores.some(i => i.casilla === id && !i.muerto && !i.escapado))
+    return resultado(false, "hay un Investigador en esa casilla de Puerta");
   const despues = antes === "dañada" ? "destruida" : "dañada";
   estado.puertas[id] = despues;
   a.accionesUsadas.add("romper");
@@ -1199,7 +1220,8 @@ function parteDelTurno(estado, anuncios) {
   const a = estado.adversario;
   const partes = anuncios.slice();
   if (!a.oculto) partes.push(`El Adversario está a la vista en ${a.casilla}.`);
-  else if (estado.sombras.length) partes.push(`Sombra en ${estado.sombras.join(", ")}.`);
+  else if (sombrasEnTablero(estado).length)
+    partes.push(`Sombra en ${sombrasEnTablero(estado).join(", ")}.`);
   return partes;
 }
 /** Lo que nunca debe salir de detrás de la pantalla. */
@@ -1215,7 +1237,7 @@ const api = {
   crearPartida, prepararMapa,
   luzDe, hayVision, distancia, aMenosDe, vecinasDe, clave,
   iniciarTurnoAdversario, sprint, mover, puedeAcechar, acechar,
-  romperPuerta, desaparecer, finDeRonda, puedeAtacar, atacar, CARTAS_ATAQUE,
+  romperPuerta, desaparecer, finDeRonda, puedeAtacar, atacar, CARTAS_ATAQUE, sombrasEnTablero,
   HABILIDADES, habilidadDisponible, usarHabilidad, recargar, terminarTurnoAdversario,
   ESCAPES, EVIDENCIA_NECESARIA, manoDeEscape, elegirEscape,
   herir, escapar, entregarEvidencia, colocacionInicial, cerrarPuerta,
