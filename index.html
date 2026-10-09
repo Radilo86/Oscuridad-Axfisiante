@@ -123,6 +123,10 @@ padding:12px 16px;font-size:14px;z-index:20;line-height:1.4}
       <button class="btn" id="btnAdversario" style="width:100%;margin-top:6px">Turno del Adversario</button>
     </div>
     <div class="seccion" id="panelTurno" hidden></div>
+    <div class="seccion" id="cajaObjetivo" hidden>
+      <h4>Objetivo</h4>
+      <div id="panelObjetivo"></div>
+    </div>
     <div class="seccion">
       <h4>Lo que se sabe del Adversario</h4>
       <div id="estadoAdv"></div>
@@ -12671,10 +12675,10 @@ const HABILIDADES = {
     },
   },
   "Oscuridad vengativa": {
-    recarga: 1, coste: 0,
+    recarga: 1, coste: 0, reservada: true,      // solo toca su propia carta
     efecto: (e) => {
-      e.adversario.oscuridad = (e.adversario.oscuridad || 0);
-      return "Coloca 1 ficha de Linterna en esta carta por cada carta Linterna en el tablero; con 2 fichas, 1 de Acecho.";
+      e.adversario.oscuridad = (e.adversario.oscuridad || 0) + e.linternas.length;
+      return `Acumula ${e.adversario.oscuridad} ficha(s) de Linterna; con 2 se cambian por 1 de Acecho.`;
     },
   },
   "Putrefacción": {
@@ -12696,7 +12700,7 @@ const HABILIDADES = {
     },
   },
   "Terror creciente": {
-    recarga: 2, coste: 0,
+    recarga: 2, coste: 0, reservada: true,      // solo afecta a su propia pista
     efecto: (e) => {
       e.adversario.terrorCreciente = true;
       return "La próxima vez que gane Acecho al Acechar, lo duplica.";
@@ -12723,7 +12727,7 @@ function usarHabilidad(estado, nombre, datos) {
   a.acecho -= h.coste;
   const texto = h.efecto(estado, datos);
   a.recarga[nombre] = { zona: "r" + h.recarga, bocaAbajo: true };
-  return resultado(true, null, [anuncia(estado, `${nombre}: ${texto}`)]);
+  return resultado(true, null, [anuncia(estado, `${nombre}: ${texto}`, !!h.reservada)]);
 }
 /** Los tres pasos de la Recarga, en el orden exacto del reglamento. */
 function recargar(estado) {
@@ -12910,6 +12914,130 @@ function resolverEventoAdversario(estado, rnd) {
   return resultado(true, null, anuncios);
 }
 
+/*
+ * Segunda fase: una vez elegido el Objetivo. Cada acción tiene su límite de
+ * "una vez por ronda para todo el grupo", tal y como dicen las cartas.
+ */
+const RECOMPENSAS = {
+  "Revelar 1 Punto de Interés": { repetible: true },
+  "Ficha de Ventana Abierta":   { repetible: true },
+  "Robar 1 Objeto General":     { repetible: true },
+  "Robar 1 Objeto Maldito":     { repetible: false },
+  "Ficha de Penumbra":          { repetible: false },
+  "Ficha de Pasadizo Secreto":  { repetible: false },
+  "Robar 1 Objeto Médico":      { repetible: false },
+  "Dar 1 ficha de Habilidad Mayor": { repetible: false },
+};
+function recompensasDisponibles(estado) {
+  return Object.keys(RECOMPENSAS).filter(r =>
+    RECOMPENSAS[r].repetible || !(estado.recompensasGastadas || []).includes(r));
+}
+function tomarRecompensa(estado, nombre) {
+  if (!recompensasDisponibles(estado).includes(nombre))
+    return resultado(false, "esa recompensa ya se ha usado o no existe");
+  if (!RECOMPENSAS[nombre].repetible) estado.recompensasGastadas.push(nombre);
+  const anuncios = [anuncia(estado, `Recompensa: ${nombre}.`)];
+  if (nombre === "Revelar 1 Punto de Interés") {
+    const pdi = estado.ocultos.find(o => o.tipo === "pdi");
+    if (pdi) {
+      estado.ocultos = estado.ocultos.filter(o => o !== pdi);
+      anuncios.push(anuncia(estado, `La ficha del Punto de Interés de ${pdi.de} está en ${pdi.casilla}.`));
+    } else anuncios.push(anuncia(estado, "Ya no quedan fichas de Punto de Interés escondidas."));
+  }
+  return resultado(true, null, anuncios);
+}
+
+/** Instalar 1 pieza del Camión: una por ronda para todo el grupo. */
+function instalarPieza(estado, idInv) {
+  const e = estado.escape;
+  if (!e || e.tipo !== "camion") return resultado(false, "no estáis con el Objetivo del Camión");
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  if (!inv || inv.casilla !== e.fichas.camion) return resultado(false, "hay que estar en la casilla del Camión");
+  if (e.progreso.instaladoEstaRonda) return resultado(false, "ya se ha instalado una pieza esta ronda");
+  if (e.progreso.piezas >= 3) return resultado(false, "ya están las tres piezas");
+  e.progreso.piezas++; e.progreso.instaladoEstaRonda = true;
+  return resultado(true, null, [anuncia(estado,
+    `Pieza instalada: ${e.progreso.piezas} de 3 en el Camión.`)]);
+}
+/** Arrancar: 1 pieza con un 6, 2 piezas con 4 o más, 3 piezas seguro. */
+function arrancarCamion(estado, dado) {
+  const e = estado.escape;
+  if (!e || e.tipo !== "camion") return resultado(false, "no estáis con el Objetivo del Camión");
+  if (e.progreso.arrancadoEstaRonda) return resultado(false, "ya se ha intentado arrancar esta ronda");
+  if (!e.progreso.piezas) return resultado(false, "hace falta al menos 1 pieza instalada");
+  e.progreso.arrancadoEstaRonda = true;
+  const umbral = e.progreso.piezas === 1 ? 6 : e.progreso.piezas === 2 ? 4 : 1;
+  const anuncios = [];
+  if (dado < umbral)
+    return resultado(true, null, [anuncia(estado, `El motor no arranca (${dado}, hacía falta ${umbral}).`)]);
+  anuncios.push(anuncia(estado, "¡El camión arranca!"));
+  for (const i of estado.investigadores) {
+    if (i.muerto || i.escapado) continue;
+    const d = distancia(estado, i.casilla, e.fichas.camion);
+    if (d !== null && d <= 1) { i.escapado = true; anuncios.push(anuncia(estado, `${i.id} escapa en el camión.`)); }
+  }
+  const quedan = estado.investigadores.filter(i => !i.escapado && !i.muerto);
+  if (!quedan.length) {
+    estado.desenlace = "investigadores";
+    anuncios.push(anuncia(estado, "Todos fuera. Ganan los Investigadores."));
+  } else {
+    e.progreso.escapeDisponible = true;
+    anuncios.push(anuncia(estado,
+      `Colocad la ficha de Escape en la 10 o en la 306: ${quedan.map(i => i.id).join(", ")} aún pueden salir por ahí.`));
+  }
+  return resultado(true, null, anuncios);
+}
+/** Serrar la Caja: 1 Suministro, y si se arriesgan, el dado puede dar otro o una Herida. */
+function abrirCaja(estado, idInv, dado) {
+  const e = estado.escape;
+  if (!e || e.tipo !== "caja") return resultado(false, "no estáis con el Objetivo de la Caja Fuerte");
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  if (!inv || inv.casilla !== e.fichas.sierra) return resultado(false, "hay que estar en la casilla de la Sierra");
+  if (e.progreso.abiertoEstaRonda) return resultado(false, "ya se ha usado la Sierra esta ronda");
+  e.progreso.abiertoEstaRonda = true;
+  e.progreso.supply++;
+  const anuncios = [anuncia(estado, `Suministro ${e.progreso.supply} de 4 en la Caja Fuerte.`)];
+  if (dado !== undefined) {
+    const brillante = luzDe(estado, inv.casilla) === "brillante";
+    const falla = brillante ? dado <= 2 : dado <= 4;
+    if (falla) {
+      anuncios.push(...herir(estado, idInv).anuncios);
+    } else {
+      e.progreso.supply++;
+      anuncios.push(anuncia(estado, `La suerte acompaña: Suministro ${e.progreso.supply} de 4.`));
+    }
+  }
+  if (e.progreso.supply >= 4 && !e.progreso.fusible) {
+    e.progreso.fusible = true;
+    anuncios.push(anuncia(estado, "La Caja Fuerte se abre: obtenéis el Fusible."));
+  }
+  return resultado(true, null, anuncios);
+}
+/** Activar la Salida Bloqueada con el Fusible. */
+function activarSalida(estado, idInv) {
+  const e = estado.escape;
+  if (!e || e.tipo !== "caja") return resultado(false, "no estáis con el Objetivo de la Caja Fuerte");
+  if (!e.progreso.fusible) return resultado(false, "aún no tenéis el Fusible");
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  if (!inv || inv.casilla !== e.fichas.salida) return resultado(false, "hay que estar en la Salida Bloqueada");
+  if (e.progreso.escapeDisponible) return resultado(false, "la Salida ya está abierta");
+  e.progreso.escapeDisponible = true;
+  return resultado(true, null, [anuncia(estado,
+    `La Salida de ${e.fichas.salida} queda abierta: cualquiera puede escapar desde ahí.`)]);
+}
+/** Salir por la ficha de Escape. */
+function escaparPorSalida(estado, idInv, casilla) {
+  const e = estado.escape;
+  if (!e || !e.progreso.escapeDisponible) return resultado(false, "todavía no hay salida abierta");
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  if (!inv) return resultado(false, "no existe ese investigador");
+  const validas = e.tipo === "caja" ? [e.fichas.salida] : ["10", "306"];
+  const donde = casilla || inv.casilla;
+  if (!validas.includes(donde))
+    return resultado(false, `hay que estar en ${validas.join(" o ")}`);
+  return escapar(estado, idInv);
+}
+
 const EVIDENCIA_NECESARIA = { 2: 2, 3: 3, 4: 5 };
 const tramoDado = d => d <= 2 ? "1-2" : d <= 4 ? "3-4" : "5-6";
 
@@ -12924,7 +13052,9 @@ function elegirEscape(estado, nombre, dado) {
   const c = ESCAPES[nombre];
   if (!c) return resultado(false, "no existe esa carta de Escape");
   if (estado.escape) return resultado(false, "ya hay un Objetivo elegido");
-  estado.escape = { nombre, tipo: c.tipo, fichas: {} };
+  estado.escape = { nombre, tipo: c.tipo, fichas: {},
+    progreso: { piezas: 0, supply: 0, fusible: false, escapeDisponible: false,
+                instaladoEstaRonda: false, arrancadoEstaRonda: false, abiertoEstaRonda: false } };
   const pasos = [];
   const tr = tramoDado(dado || 1);
   if (c.tipo === "camion") {
@@ -13011,6 +13141,7 @@ function crearPartida(opciones) {
     evidenciaNecesaria: EVIDENCIA_NECESARIA[(opciones.investigadores || []).length] ?? 5,
     escape: null,
     desenlace: null,                     // null | "adversario" | "investigadores" | "empate"
+    recompensasGastadas: [],
     mazoEventos: null, eventoActual: null, eventosPermanentes: [],
     registro: [],
   };
@@ -13051,10 +13182,11 @@ function escapar(estado, idInv) {
   return resultado(true, null, anuncios);
 }
 /** Entregar Evidencia en una casilla de Ordenador. */
-function entregarEvidencia(estado, idInv, cuantas = 1) {
+function entregarEvidencia(estado, idInv, cuantas = 1, casilla) {
   const inv = estado.investigadores.find(i => i.id === idInv);
   if (!inv) return resultado(false, "no existe ese investigador");
-  if (estado.mapa.casillas.get(inv.casilla)?.type !== "terminal")
+  const donde = casilla || inv.casilla;
+  if (estado.mapa.casillas.get(donde)?.type !== "terminal")
     return resultado(false, "hay que estar en una casilla de Ordenador");
   estado.evidencias += cuantas;
   const anuncios = [anuncia(estado, `Evidencia entregada: ${estado.evidencias} de ${estado.evidenciaNecesaria}.`)];
@@ -13063,7 +13195,15 @@ function entregarEvidencia(estado, idInv, cuantas = 1) {
   return resultado(true, null, anuncios);
 }
 
-function anuncia(estado, texto) { estado.registro.push({ ronda: estado.ronda, texto }); return texto; }
+/**
+ * Un anuncio público es lo que el Adversario diría en voz alta: fichas que
+ * toca en el tablero central y cosas que les pasan a los Investigadores.
+ * Lo reservado se queda detrás de su pantalla y solo sale en el informe final.
+ */
+function anuncia(estado, texto, privado) {
+  estado.registro.push({ ronda: estado.ronda, texto, privado: !!privado });
+  return privado ? { texto, privado: true } : texto;
+}
 function resultado(ok, motivo, anuncios = []) { return { ok, motivo, anuncios }; }
 
 // ─────────────────────────────────────────────── turno del Adversario
@@ -13201,7 +13341,8 @@ function acechar(estado, objetivos) {
       inv.escalofrio = null;
       a.acecho = Math.min(8, a.acecho + (a.terrorCreciente ? 2 : 1));
       if (a.terrorCreciente) a.terrorCreciente = false;
-      anuncios.push(anuncia(estado, `${id} devuelve su Escalofrío. El Acecho sube a ${a.acecho}.`));
+      anuncios.push(anuncia(estado, `${id} devuelve su ficha de Escalofrío.`));
+      anuncios.push(anuncia(estado, `El Acecho sube a ${a.acecho}.`, true));
     } else {
       inv.escalofrio = { ronda: estado.ronda };
       anuncios.push(anuncia(estado, `${id} recibe una ficha de Escalofrío.`));
@@ -13323,7 +13464,8 @@ function moverInvestigador(estado, idInv, casilla) {
   if (estado.ojos && estado.ojos.includes(casilla)) {
     estado.ojos = estado.ojos.filter(c => c !== casilla);
     estado.adversario.acecho = Math.min(8, estado.adversario.acecho + 1);
-    anuncios.push(anuncia(estado, `${idInv} ha pisado un Ojo Malévolo en ${casilla}: el Acecho sube a ${estado.adversario.acecho}.`));
+    anuncios.push(anuncia(estado, `${idInv} ha pisado un Ojo Malévolo en ${casilla}: retirad la ficha.`));
+    anuncios.push(anuncia(estado, `El Acecho sube a ${estado.adversario.acecho}.`, true));
   }
   return resultado(true, null, anuncios);
 }
@@ -13346,7 +13488,7 @@ function revisarRevelado(estado) {
 function terminarTurnoAdversario(estado) {
   const vuelven = recargar(estado);
   const anuncios = vuelven.length
-    ? [anuncia(estado, `Vuelven a estar disponibles: ${vuelven.join(", ")}.`)] : [];
+    ? [anuncia(estado, `Vuelven a estar disponibles: ${vuelven.join(", ")}.`, true)] : [];
   // las fichas de Ojo Malévolo se retiran al empezar su siguiente turno
   estado.fase = "finRonda";
   return resultado(true, null, anuncios);
@@ -13391,6 +13533,11 @@ function finDeRonda(estado) {
     estado.fase = "fin";
     return resultado(true, null, anuncios);
   }
+  if (estado.escape && estado.escape.progreso) {
+    estado.escape.progreso.instaladoEstaRonda = false;
+    estado.escape.progreso.arrancadoEstaRonda = false;
+    estado.escape.progreso.abiertoEstaRonda = false;
+  }
   estado.ronda += 1;
   estado.fase = "eventos";
   anuncios.push(anuncia(estado, `Empieza la ronda ${estado.ronda}.`));
@@ -13424,6 +13571,8 @@ const api = {
   HABILIDADES, habilidadDisponible, usarHabilidad, recargar, terminarTurnoAdversario,
   ESCAPES, EVIDENCIA_NECESARIA, manoDeEscape, elegirEscape,
   herir, escapar, entregarEvidencia, colocacionInicial, cerrarPuerta,
+  RECOMPENSAS, recompensasDisponibles, tomarRecompensa,
+  instalarPieza, arrancarCamion, abrirCaja, activarSalida, escaparPorSalida,
   prepararDestierro, revisarTumba, exhumar, usarGarfio, usarCuerdas,
   EVENTOS, montarEventos, robarEvento, resolverEventoAdversario,
   ponerLinterna, encenderZona, moverInvestigador, revisarRevelado,
@@ -13889,7 +14038,7 @@ function comenzar() {
     colores[j.nombre] = c; colores[j.inv] = c;
   }
   J = {
-    estado, jugadores, semilla, rnd, secreto: [], colores,
+    estado, jugadores, semilla, rnd, secreto: [], reservado: [], colores,
     nivel: $("nivel").value,
     turno: null,                 // índice del jugador en turno
     hechos: new Set(),           // quién ha jugado ya esta ronda
@@ -13898,9 +14047,8 @@ function comenzar() {
   };
   for (const p of prep.pasos) apunta("Preparación", p);
   if (conEventos) {
-    const ev = M.robarEvento(estado);
-    ev.anuncios.forEach(t => apunta("Evento", t));
-    M.resolverEventoAdversario(estado, rnd).anuncios.forEach(t => apunta("Evento", t));
+    reparte(M.robarEvento(estado).anuncios, "Evento");
+    reparte(M.resolverEventoAdversario(estado, rnd).anuncios, "Evento");
   } else {
     apunta("Preparación", "Partida sin cartas de Evento: sin incendio que meta prisa, " +
       "las 17 rondas dan mucho más margen y el Carnicero no recibe ayudas del tablero.");
@@ -13917,8 +14065,19 @@ function comenzar() {
 
 // ─────────────────────────────── bitácora y estado
 
+function esTexto(a) { return typeof a === "string" ? a : a.texto; }
+function esPrivado(a) { return typeof a !== "string" && a.privado; }
+/** Reparte una lista de anuncios: lo público a la bitácora, lo demás al informe final. */
+function reparte(anuncios, quien) {
+  const publicos = [];
+  for (const a of anuncios || []) {
+    if (esPrivado(a)) J.reservado.push({ ronda: J.estado.ronda, texto: esTexto(a) });
+    else { apunta(quien, esTexto(a)); publicos.push(esTexto(a)); }
+  }
+  return publicos;
+}
 function apunta(quien, texto) {
-  J.bitacora.push({ ronda: J.estado.ronda, quien, texto, hora: new Date().toISOString() });
+  J.bitacora.push({ ronda: J.estado.ronda, quien, texto: esTexto(texto), hora: new Date().toISOString() });
   pintarLog();
 }
 function pintarLog() {
@@ -13941,6 +14100,8 @@ function textoBitacora() {
     l.push(``, `Resultado: ${
       J.estado.desenlace === "adversario" ? "gana el Carnicero" :
       J.estado.desenlace === "empate" ? "tablas" : "ganan los Investigadores"}`);
+    l.push(``, `══ Lo que no dijo en voz alta ══`);
+    for (const x of J.reservado) l.push(`  Ronda ${x.ronda}: ${x.texto}`);
     l.push(``, `══ Lo que hizo el Adversario a escondidas ══`,
       `Carta de Ataque: ${J.estado.adversario.cartas.join(", ")}`,
       `Habilidades: ${(J.estado.adversario.habilidades || []).join(", ") || "ninguna"}`);
@@ -14005,7 +14166,6 @@ function refrescar() {
     b.onclick = () => elegirJugador(+b.dataset.i));
 
   $("estadoAdv").innerHTML = `
-    <div class="dato"><span>Acecho</span><b>${e.adversario.acecho}</b></div>
     <div class="dato"><span>Sombras</span><b>${e.sombras.length ? e.sombras.join(", ") : "—"}</b></div>
     <div class="dato"><span>Ruido</span><b>${e.ruido.size || "—"}</b></div>
     <div class="dato"><span>Adversario</span><b>${e.adversario.oculto ? "Oculto" : "Revelado en " + e.adversario.casilla}</b></div>
@@ -14014,6 +14174,7 @@ function refrescar() {
   const toca = e.evidencias >= e.evidenciaNecesaria && !e.escape;
   $("btnObjetivo").hidden = !toca;
   $("btnAdversario").disabled = pendientes.length > 0 || toca;
+  pintarObjetivo();
   $("panelTurno").hidden = J.turno === null;
   if (J.turno !== null) pintarPanelTurno();
   dibujar();
@@ -14148,13 +14309,17 @@ function pintarPanelTurno() {
     refrescar(); comprobarFinal();
   };
   if ($("btnEvidencia")) $("btnEvidencia").onclick = () => {
-    const r = M.entregarEvidencia(J.estado, j.inv);
+    const r = M.entregarEvidencia(J.estado, j.inv, 1, b.destino);
     if (!r.ok) { alerta(r.motivo); return; }
-    r.anuncios.forEach(t => apunta(j.nombre, t));
+    reparte(r.anuncios, j.nombre);
+    elegirRecompensa(j.nombre);
     refrescar();
   };
   if ($("btnEscapar")) $("btnEscapar").onclick = () => {
-    const r = M.escapar(J.estado, j.inv);
+    const esc = J.estado.escape;
+    const r = (esc && esc.progreso && esc.progreso.escapeDisponible)
+      ? M.escaparPorSalida(J.estado, j.inv, b.destino)
+      : M.escapar(J.estado, j.inv);
     if (!r.ok) { alerta(r.motivo); return; }
     r.anuncios.forEach(t => apunta(j.nombre, t));
     J.hechos.add(j.inv); J.turno = null;
@@ -14176,7 +14341,8 @@ function cambiarPuerta(id) {
     const r = M.cerrarPuerta(e, id);
     if (!r.ok) { alerta(r.motivo); return; }
     apunta(nombre, `Cierra la puerta de ${id}.`);
-    if (r.anuncios.length) { r.anuncios.forEach(t => apunta("Adversario", t)); parte(r.anuncios); }
+    const pub = reparte(r.anuncios, "Adversario");
+    if (pub.length) parte(pub);
   }
   refrescar();
 }
@@ -14212,9 +14378,9 @@ function revelarPorLuz(anunciosPrevios) {
     } else quedan.push(t);
   }
   e.ocultos = quedan;
-  textos.forEach(t => apunta("Adversario", t));
-  hallazgos.forEach(t => apunta("Hallazgo", t));
-  const todo = textos.concat(hallazgos);
+  const pubAdv = reparte(textos, "Adversario");
+  const pubHal = reparte(hallazgos, "Hallazgo");
+  const todo = pubAdv.concat(pubHal);
   if (todo.length) parte(todo, null, textos.length ? ROJO : VERDE);
 }
 
@@ -14228,13 +14394,87 @@ function terminarTurno() {
   confirmar(`Turno de ${j.nombre}\n\n${resumen}\n\n¿Validar? Después no se podrá rectificar.`, () => {
     const mov = M.moverInvestigador(J.estado, j.inv, b.destino);
     const r = M.revisarRevelado(J.estado);
-    mov.anuncios.forEach(t => apunta("Adversario", t));
     revelarPorLuz(r.anuncios.concat(mov.anuncios));
     apunta(j.nombre, `Termina su turno en ${b.destino}.`);
     J.hechos.add(j.inv);
     J.turno = null; J.borrador = null; modo = null; seleccion.clear();
     refrescar(); guardar();
   });
+}
+
+/** Por cada Evidencia entregada se elige 1 recompensa de la lista del manual. */
+function elegirRecompensa(quien) {
+  const libres = M.recompensasDisponibles(J.estado);
+  $("modalTitulo").textContent = "Elegid 1 recompensa por esa Evidencia";
+  $("modalTitulo").style.color = "";
+  $("modalCuerpo").innerHTML = libres.map(n =>
+    `<button class="btn premio" data-n="${n}" style="width:100%;margin-bottom:6px">${n}` +
+    `${M.RECOMPENSAS[n].repetible ? "" : " <small>(una vez por partida)</small>"}</button>`).join("");
+  $("modalOk").hidden = true; $("modalCancelar").hidden = false;
+  $("modal").hidden = false;
+  $("modalCancelar").onclick = () => { $("modal").hidden = true; $("modalOk").hidden = false; };
+  $("modalCuerpo").querySelectorAll(".premio").forEach(b => b.onclick = () => {
+    const r = M.tomarRecompensa(J.estado, b.dataset.n);
+    $("modal").hidden = true; $("modalOk").hidden = false;
+    reparte(r.anuncios, "Hallazgo");
+    refrescar(); guardar();
+  });
+}
+
+/** Panel de la segunda fase: lo que falta para escapar. */
+function pintarObjetivo() {
+  const e = J.estado, esc = e.escape;
+  $("cajaObjetivo").hidden = !esc;
+  if (!esc) return;
+  const p = esc.progreso || {};
+  let html = `<b>${esc.nombre}</b><br>`;
+  if (esc.tipo === "camion") {
+    html += `Camión en <b>${esc.fichas.camion}</b> · Piezas instaladas <b>${p.piezas}/3</b><br>` +
+      `<small>Batería ${esc.fichas.bateria} · Herramientas ${esc.fichas.herramientas} · Bujía ${esc.fichas.bujia}</small><br>` +
+      `<button class="mini" id="objInstalar"${p.instaladoEstaRonda || p.piezas >= 3 ? " disabled" : ""}>Instalar pieza</button> ` +
+      `<button class="mini" id="objArrancar"${p.arrancadoEstaRonda || !p.piezas ? " disabled" : ""}>Arrancar</button>`;
+  } else if (esc.tipo === "caja") {
+    html += `Sierra en <b>${esc.fichas.sierra}</b> · Caja en <b>${esc.fichas.caja}</b> · Salida en <b>${esc.fichas.salida}</b><br>` +
+      `Suministros <b>${p.supply}/4</b>${p.fusible ? " · <b>Fusible obtenido</b>" : ""}<br>` +
+      `<button class="mini" id="objSerrar"${p.abiertoEstaRonda || p.fusible ? " disabled" : ""}>Usar la Sierra</button> ` +
+      `<button class="mini" id="objArriesgar"${p.abiertoEstaRonda || p.fusible ? " disabled" : ""}>Serrar arriesgando</button> ` +
+      `<button class="mini" id="objSalida"${!p.fusible || p.escapeDisponible ? " disabled" : ""}>Activar la Salida</button>`;
+  } else {
+    const d = e.destierro || {};
+    html += d.exhumada
+      ? `Tumba exhumada${d.arde ? " · todavía arde" : " · el Garfio ya sirve"}<br>` +
+        `<button class="mini" id="objGarfio"${d.arde ? " disabled" : ""}>Usar el Garfio</button> ` +
+        `<button class="mini" id="objCuerdas">Cuerdas deshilachadas</button>`
+      : d.descubierta ? `Tumba localizada en <b>${d.real}</b><br><button class="mini" id="objExhumar">Exhumar</button>`
+      : `Pista bocabajo en <b>${d.señuelo}</b>. La Tumba está a 3 casillas o menos de ahí.`;
+  }
+  if (p.escapeDisponible) html += `<br><b style="color:var(--teal)">La salida está abierta.</b>`;
+  $("panelObjetivo").innerHTML = html;
+  const quien = () => J.turno !== null ? J.jugadores[J.turno].inv : null;
+  const pide = () => { alerta("Selecciona antes al jugador que hace la acción."); return null; };
+  const act = (id, fn) => { const b = $(id); if (b) b.onclick = () => {
+    const q = quien(); if (!q) { pide(); return; }
+    const r = fn(q); if (!r.ok) { alerta(r.motivo); return; }
+    reparte(r.anuncios, J.jugadores[J.turno].nombre);
+    refrescar(); guardar(); comprobarFinal();
+  }; };
+  const d6 = () => 1 + Math.floor(J.rnd() * 6);
+  act("objInstalar", q => M.instalarPieza(e, q));
+  act("objArrancar", () => M.arrancarCamion(e, d6()));
+  act("objSerrar",   q => M.abrirCaja(e, q));
+  act("objArriesgar",q => M.abrirCaja(e, q, d6()));
+  act("objSalida",   q => M.activarSalida(e, q));
+  act("objExhumar",  q => M.exhumar(e, q));
+  act("objCuerdas",  () => M.usarCuerdas(e, J.rnd));
+  if ($("objGarfio")) $("objGarfio").onclick = () => {
+    const q = quien(); if (!q) { pide(); return; }
+    const casilla = J.borrador ? J.borrador.destino : null;
+    alerta("Marca primero la casilla adyacente a la que quieres apuntar y vuelve a pulsar.");
+    if (!casilla) return;
+    const r = M.usarGarfio(e, q, casilla);
+    if (!r.ok) { alerta(r.motivo); return; }
+    reparte(r.anuncios, "Hallazgo"); refrescar(); comprobarFinal();
+  };
 }
 
 function elegirObjetivo() {
@@ -14273,19 +14513,17 @@ function turnoAdversario() {
   const r = IA.jugarTurno(e, { nivel: J.nivel, rnd: J.rnd });
   J.secreto.push(Object.assign({ ronda: e.ronda }, r.secreto,
     { puesto: r.puesto, dado: r.dado, opciones: r.opciones }));
-  const textos = r.anuncios.length ? r.anuncios : ["El Adversario se mueve en silencio. No hay nada que anunciar."];
-  textos.forEach(t => apunta("Adversario", t));
+  const publicos = reparte(r.anuncios, "Adversario");
+  const textos = publicos.length ? publicos
+    : ["El Adversario se mueve en silencio. No hay nada que anunciar."];
   parte(textos, () => {
     const fin = M.finDeRonda(e);
-    fin.anuncios.forEach(t => apunta("Ronda", t));
+    reparte(fin.anuncios, "Ronda");
     J.hechos.clear(); J.turno = null;
     pon("ambiente");
     if (!e.desenlace && e.mazoEventos) {
-      const ev = M.robarEvento(e);
-      ev.anuncios.forEach(t => apunta("Evento", t));
-      const dec = M.resolverEventoAdversario(e, J.rnd);
-      dec.anuncios.forEach(t => apunta("Evento", t));
-      fin.anuncios.push(...ev.anuncios, ...dec.anuncios);
+      reparte(M.robarEvento(e).anuncios, "Evento");
+      reparte(M.resolverEventoAdversario(e, J.rnd).anuncios, "Evento");
     }
     refrescar(); guardar();
     comprobarFinal();
@@ -14446,6 +14684,7 @@ function serializar() {
   const e = J.estado;
   return JSON.stringify({
     v: 1, nivel: J.nivel, semilla: J.semilla, jugadores: J.jugadores, secreto: J.secreto,
+    reservado: J.reservado,
     colores: J.colores,
     cartas: J.estado.adversario.cartas,
     hechos: [...J.hechos], bitacora: J.bitacora,
@@ -14496,7 +14735,7 @@ function recuperar(texto) {
   J = { estado, jugadores: d.jugadores, semilla: d.semilla, colores: d.colores || {},
         rnd: IA.azar(d.semilla + d.estado.ronda),
         nivel: d.nivel, turno: null, hechos: new Set(d.hechos), bitacora: d.bitacora,
-        secreto: d.secreto || [], borrador: null };
+        secreto: d.secreto || [], reservado: d.reservado || [], borrador: null };
   pintarLog();
   $("preparacion").hidden = true; $("partida").hidden = false;
   redimensionar(); encuadrar(); refrescar();

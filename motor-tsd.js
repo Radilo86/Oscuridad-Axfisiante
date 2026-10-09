@@ -323,10 +323,10 @@ const HABILIDADES = {
     },
   },
   "Oscuridad vengativa": {
-    recarga: 1, coste: 0,
+    recarga: 1, coste: 0, reservada: true,      // solo toca su propia carta
     efecto: (e) => {
-      e.adversario.oscuridad = (e.adversario.oscuridad || 0);
-      return "Coloca 1 ficha de Linterna en esta carta por cada carta Linterna en el tablero; con 2 fichas, 1 de Acecho.";
+      e.adversario.oscuridad = (e.adversario.oscuridad || 0) + e.linternas.length;
+      return `Acumula ${e.adversario.oscuridad} ficha(s) de Linterna; con 2 se cambian por 1 de Acecho.`;
     },
   },
   "Putrefacción": {
@@ -348,7 +348,7 @@ const HABILIDADES = {
     },
   },
   "Terror creciente": {
-    recarga: 2, coste: 0,
+    recarga: 2, coste: 0, reservada: true,      // solo afecta a su propia pista
     efecto: (e) => {
       e.adversario.terrorCreciente = true;
       return "La próxima vez que gane Acecho al Acechar, lo duplica.";
@@ -375,7 +375,7 @@ function usarHabilidad(estado, nombre, datos) {
   a.acecho -= h.coste;
   const texto = h.efecto(estado, datos);
   a.recarga[nombre] = { zona: "r" + h.recarga, bocaAbajo: true };
-  return resultado(true, null, [anuncia(estado, `${nombre}: ${texto}`)]);
+  return resultado(true, null, [anuncia(estado, `${nombre}: ${texto}`, !!h.reservada)]);
 }
 /** Los tres pasos de la Recarga, en el orden exacto del reglamento. */
 function recargar(estado) {
@@ -562,6 +562,130 @@ function resolverEventoAdversario(estado, rnd) {
   return resultado(true, null, anuncios);
 }
 
+/*
+ * Segunda fase: una vez elegido el Objetivo. Cada acción tiene su límite de
+ * "una vez por ronda para todo el grupo", tal y como dicen las cartas.
+ */
+const RECOMPENSAS = {
+  "Revelar 1 Punto de Interés": { repetible: true },
+  "Ficha de Ventana Abierta":   { repetible: true },
+  "Robar 1 Objeto General":     { repetible: true },
+  "Robar 1 Objeto Maldito":     { repetible: false },
+  "Ficha de Penumbra":          { repetible: false },
+  "Ficha de Pasadizo Secreto":  { repetible: false },
+  "Robar 1 Objeto Médico":      { repetible: false },
+  "Dar 1 ficha de Habilidad Mayor": { repetible: false },
+};
+function recompensasDisponibles(estado) {
+  return Object.keys(RECOMPENSAS).filter(r =>
+    RECOMPENSAS[r].repetible || !(estado.recompensasGastadas || []).includes(r));
+}
+function tomarRecompensa(estado, nombre) {
+  if (!recompensasDisponibles(estado).includes(nombre))
+    return resultado(false, "esa recompensa ya se ha usado o no existe");
+  if (!RECOMPENSAS[nombre].repetible) estado.recompensasGastadas.push(nombre);
+  const anuncios = [anuncia(estado, `Recompensa: ${nombre}.`)];
+  if (nombre === "Revelar 1 Punto de Interés") {
+    const pdi = estado.ocultos.find(o => o.tipo === "pdi");
+    if (pdi) {
+      estado.ocultos = estado.ocultos.filter(o => o !== pdi);
+      anuncios.push(anuncia(estado, `La ficha del Punto de Interés de ${pdi.de} está en ${pdi.casilla}.`));
+    } else anuncios.push(anuncia(estado, "Ya no quedan fichas de Punto de Interés escondidas."));
+  }
+  return resultado(true, null, anuncios);
+}
+
+/** Instalar 1 pieza del Camión: una por ronda para todo el grupo. */
+function instalarPieza(estado, idInv) {
+  const e = estado.escape;
+  if (!e || e.tipo !== "camion") return resultado(false, "no estáis con el Objetivo del Camión");
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  if (!inv || inv.casilla !== e.fichas.camion) return resultado(false, "hay que estar en la casilla del Camión");
+  if (e.progreso.instaladoEstaRonda) return resultado(false, "ya se ha instalado una pieza esta ronda");
+  if (e.progreso.piezas >= 3) return resultado(false, "ya están las tres piezas");
+  e.progreso.piezas++; e.progreso.instaladoEstaRonda = true;
+  return resultado(true, null, [anuncia(estado,
+    `Pieza instalada: ${e.progreso.piezas} de 3 en el Camión.`)]);
+}
+/** Arrancar: 1 pieza con un 6, 2 piezas con 4 o más, 3 piezas seguro. */
+function arrancarCamion(estado, dado) {
+  const e = estado.escape;
+  if (!e || e.tipo !== "camion") return resultado(false, "no estáis con el Objetivo del Camión");
+  if (e.progreso.arrancadoEstaRonda) return resultado(false, "ya se ha intentado arrancar esta ronda");
+  if (!e.progreso.piezas) return resultado(false, "hace falta al menos 1 pieza instalada");
+  e.progreso.arrancadoEstaRonda = true;
+  const umbral = e.progreso.piezas === 1 ? 6 : e.progreso.piezas === 2 ? 4 : 1;
+  const anuncios = [];
+  if (dado < umbral)
+    return resultado(true, null, [anuncia(estado, `El motor no arranca (${dado}, hacía falta ${umbral}).`)]);
+  anuncios.push(anuncia(estado, "¡El camión arranca!"));
+  for (const i of estado.investigadores) {
+    if (i.muerto || i.escapado) continue;
+    const d = distancia(estado, i.casilla, e.fichas.camion);
+    if (d !== null && d <= 1) { i.escapado = true; anuncios.push(anuncia(estado, `${i.id} escapa en el camión.`)); }
+  }
+  const quedan = estado.investigadores.filter(i => !i.escapado && !i.muerto);
+  if (!quedan.length) {
+    estado.desenlace = "investigadores";
+    anuncios.push(anuncia(estado, "Todos fuera. Ganan los Investigadores."));
+  } else {
+    e.progreso.escapeDisponible = true;
+    anuncios.push(anuncia(estado,
+      `Colocad la ficha de Escape en la 10 o en la 306: ${quedan.map(i => i.id).join(", ")} aún pueden salir por ahí.`));
+  }
+  return resultado(true, null, anuncios);
+}
+/** Serrar la Caja: 1 Suministro, y si se arriesgan, el dado puede dar otro o una Herida. */
+function abrirCaja(estado, idInv, dado) {
+  const e = estado.escape;
+  if (!e || e.tipo !== "caja") return resultado(false, "no estáis con el Objetivo de la Caja Fuerte");
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  if (!inv || inv.casilla !== e.fichas.sierra) return resultado(false, "hay que estar en la casilla de la Sierra");
+  if (e.progreso.abiertoEstaRonda) return resultado(false, "ya se ha usado la Sierra esta ronda");
+  e.progreso.abiertoEstaRonda = true;
+  e.progreso.supply++;
+  const anuncios = [anuncia(estado, `Suministro ${e.progreso.supply} de 4 en la Caja Fuerte.`)];
+  if (dado !== undefined) {
+    const brillante = luzDe(estado, inv.casilla) === "brillante";
+    const falla = brillante ? dado <= 2 : dado <= 4;
+    if (falla) {
+      anuncios.push(...herir(estado, idInv).anuncios);
+    } else {
+      e.progreso.supply++;
+      anuncios.push(anuncia(estado, `La suerte acompaña: Suministro ${e.progreso.supply} de 4.`));
+    }
+  }
+  if (e.progreso.supply >= 4 && !e.progreso.fusible) {
+    e.progreso.fusible = true;
+    anuncios.push(anuncia(estado, "La Caja Fuerte se abre: obtenéis el Fusible."));
+  }
+  return resultado(true, null, anuncios);
+}
+/** Activar la Salida Bloqueada con el Fusible. */
+function activarSalida(estado, idInv) {
+  const e = estado.escape;
+  if (!e || e.tipo !== "caja") return resultado(false, "no estáis con el Objetivo de la Caja Fuerte");
+  if (!e.progreso.fusible) return resultado(false, "aún no tenéis el Fusible");
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  if (!inv || inv.casilla !== e.fichas.salida) return resultado(false, "hay que estar en la Salida Bloqueada");
+  if (e.progreso.escapeDisponible) return resultado(false, "la Salida ya está abierta");
+  e.progreso.escapeDisponible = true;
+  return resultado(true, null, [anuncia(estado,
+    `La Salida de ${e.fichas.salida} queda abierta: cualquiera puede escapar desde ahí.`)]);
+}
+/** Salir por la ficha de Escape. */
+function escaparPorSalida(estado, idInv, casilla) {
+  const e = estado.escape;
+  if (!e || !e.progreso.escapeDisponible) return resultado(false, "todavía no hay salida abierta");
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  if (!inv) return resultado(false, "no existe ese investigador");
+  const validas = e.tipo === "caja" ? [e.fichas.salida] : ["10", "306"];
+  const donde = casilla || inv.casilla;
+  if (!validas.includes(donde))
+    return resultado(false, `hay que estar en ${validas.join(" o ")}`);
+  return escapar(estado, idInv);
+}
+
 const EVIDENCIA_NECESARIA = { 2: 2, 3: 3, 4: 5 };
 const tramoDado = d => d <= 2 ? "1-2" : d <= 4 ? "3-4" : "5-6";
 
@@ -576,7 +700,9 @@ function elegirEscape(estado, nombre, dado) {
   const c = ESCAPES[nombre];
   if (!c) return resultado(false, "no existe esa carta de Escape");
   if (estado.escape) return resultado(false, "ya hay un Objetivo elegido");
-  estado.escape = { nombre, tipo: c.tipo, fichas: {} };
+  estado.escape = { nombre, tipo: c.tipo, fichas: {},
+    progreso: { piezas: 0, supply: 0, fusible: false, escapeDisponible: false,
+                instaladoEstaRonda: false, arrancadoEstaRonda: false, abiertoEstaRonda: false } };
   const pasos = [];
   const tr = tramoDado(dado || 1);
   if (c.tipo === "camion") {
@@ -663,6 +789,7 @@ function crearPartida(opciones) {
     evidenciaNecesaria: EVIDENCIA_NECESARIA[(opciones.investigadores || []).length] ?? 5,
     escape: null,
     desenlace: null,                     // null | "adversario" | "investigadores" | "empate"
+    recompensasGastadas: [],
     mazoEventos: null, eventoActual: null, eventosPermanentes: [],
     registro: [],
   };
@@ -703,10 +830,11 @@ function escapar(estado, idInv) {
   return resultado(true, null, anuncios);
 }
 /** Entregar Evidencia en una casilla de Ordenador. */
-function entregarEvidencia(estado, idInv, cuantas = 1) {
+function entregarEvidencia(estado, idInv, cuantas = 1, casilla) {
   const inv = estado.investigadores.find(i => i.id === idInv);
   if (!inv) return resultado(false, "no existe ese investigador");
-  if (estado.mapa.casillas.get(inv.casilla)?.type !== "terminal")
+  const donde = casilla || inv.casilla;
+  if (estado.mapa.casillas.get(donde)?.type !== "terminal")
     return resultado(false, "hay que estar en una casilla de Ordenador");
   estado.evidencias += cuantas;
   const anuncios = [anuncia(estado, `Evidencia entregada: ${estado.evidencias} de ${estado.evidenciaNecesaria}.`)];
@@ -715,7 +843,15 @@ function entregarEvidencia(estado, idInv, cuantas = 1) {
   return resultado(true, null, anuncios);
 }
 
-function anuncia(estado, texto) { estado.registro.push({ ronda: estado.ronda, texto }); return texto; }
+/**
+ * Un anuncio público es lo que el Adversario diría en voz alta: fichas que
+ * toca en el tablero central y cosas que les pasan a los Investigadores.
+ * Lo reservado se queda detrás de su pantalla y solo sale en el informe final.
+ */
+function anuncia(estado, texto, privado) {
+  estado.registro.push({ ronda: estado.ronda, texto, privado: !!privado });
+  return privado ? { texto, privado: true } : texto;
+}
 function resultado(ok, motivo, anuncios = []) { return { ok, motivo, anuncios }; }
 
 // ─────────────────────────────────────────────── turno del Adversario
@@ -853,7 +989,8 @@ function acechar(estado, objetivos) {
       inv.escalofrio = null;
       a.acecho = Math.min(8, a.acecho + (a.terrorCreciente ? 2 : 1));
       if (a.terrorCreciente) a.terrorCreciente = false;
-      anuncios.push(anuncia(estado, `${id} devuelve su Escalofrío. El Acecho sube a ${a.acecho}.`));
+      anuncios.push(anuncia(estado, `${id} devuelve su ficha de Escalofrío.`));
+      anuncios.push(anuncia(estado, `El Acecho sube a ${a.acecho}.`, true));
     } else {
       inv.escalofrio = { ronda: estado.ronda };
       anuncios.push(anuncia(estado, `${id} recibe una ficha de Escalofrío.`));
@@ -975,7 +1112,8 @@ function moverInvestigador(estado, idInv, casilla) {
   if (estado.ojos && estado.ojos.includes(casilla)) {
     estado.ojos = estado.ojos.filter(c => c !== casilla);
     estado.adversario.acecho = Math.min(8, estado.adversario.acecho + 1);
-    anuncios.push(anuncia(estado, `${idInv} ha pisado un Ojo Malévolo en ${casilla}: el Acecho sube a ${estado.adversario.acecho}.`));
+    anuncios.push(anuncia(estado, `${idInv} ha pisado un Ojo Malévolo en ${casilla}: retirad la ficha.`));
+    anuncios.push(anuncia(estado, `El Acecho sube a ${estado.adversario.acecho}.`, true));
   }
   return resultado(true, null, anuncios);
 }
@@ -998,7 +1136,7 @@ function revisarRevelado(estado) {
 function terminarTurnoAdversario(estado) {
   const vuelven = recargar(estado);
   const anuncios = vuelven.length
-    ? [anuncia(estado, `Vuelven a estar disponibles: ${vuelven.join(", ")}.`)] : [];
+    ? [anuncia(estado, `Vuelven a estar disponibles: ${vuelven.join(", ")}.`, true)] : [];
   // las fichas de Ojo Malévolo se retiran al empezar su siguiente turno
   estado.fase = "finRonda";
   return resultado(true, null, anuncios);
@@ -1043,6 +1181,11 @@ function finDeRonda(estado) {
     estado.fase = "fin";
     return resultado(true, null, anuncios);
   }
+  if (estado.escape && estado.escape.progreso) {
+    estado.escape.progreso.instaladoEstaRonda = false;
+    estado.escape.progreso.arrancadoEstaRonda = false;
+    estado.escape.progreso.abiertoEstaRonda = false;
+  }
   estado.ronda += 1;
   estado.fase = "eventos";
   anuncios.push(anuncia(estado, `Empieza la ronda ${estado.ronda}.`));
@@ -1076,6 +1219,8 @@ const api = {
   HABILIDADES, habilidadDisponible, usarHabilidad, recargar, terminarTurnoAdversario,
   ESCAPES, EVIDENCIA_NECESARIA, manoDeEscape, elegirEscape,
   herir, escapar, entregarEvidencia, colocacionInicial, cerrarPuerta,
+  RECOMPENSAS, recompensasDisponibles, tomarRecompensa,
+  instalarPieza, arrancarCamion, abrirCaja, activarSalida, escaparPorSalida,
   prepararDestierro, revisarTumba, exhumar, usarGarfio, usarCuerdas,
   EVENTOS, montarEventos, robarEvento, resolverEventoAdversario,
   ponerLinterna, encenderZona, moverInvestigador, revisarRevelado,
