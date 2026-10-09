@@ -88,6 +88,9 @@ padding:12px 16px;font-size:14px;z-index:20;line-height:1.4}
         <option value="normal" selected>Normal — juega bien y se equivoca de vez en cuando</option>
         <option value="dificil">Difícil — va a por vosotros</option>
       </select></label>
+    <label class="ck" style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="conEventos" checked> Jugar con cartas de Evento</label>
+    <p style="margin:-6px 0 12px;font-size:13px;color:var(--moss)">El manual recomienda quitarlas en la primera partida. Sin ellas no hay incendio que meta prisa.</p>
     <label class="lin"><span>Número de investigadores</span>
       <select id="numInv"><option>2</option><option>3</option><option selected>4</option></select></label>
   </div>
@@ -99,6 +102,7 @@ padding:12px 16px;font-size:14px;z-index:20;line-height:1.4}
   </div>
 
   <button class="btn primario" id="btnComenzar">Comenzar partida</button>
+  <button class="btn" id="btnTutorial" style="width:100%;margin-top:8px">Cómo se juega con la app</button>
   <button class="btn" id="btnSeguir" hidden style="width:100%;margin-top:8px">Seguir la partida guardada</button>
 </section>
 
@@ -108,6 +112,9 @@ padding:12px 16px;font-size:14px;z-index:20;line-height:1.4}
       <b id="ronda">Ronda 1 de 17</b><br>
       <span id="fase"></span> · <span id="nivelActivo"></span><br>
       <span id="objetivo" style="color:var(--lantern)"></span>
+    </div>
+    <div class="seccion" id="eventoCaja" style="background:rgba(240,180,60,.07)">
+      <div id="evento" style="font-size:13.5px;line-height:1.45"></div>
     </div>
     <div class="seccion">
       <h4>Turnos</h4>
@@ -129,6 +136,7 @@ padding:12px 16px;font-size:14px;z-index:20;line-height:1.4}
   <main id="principal">
     <canvas id="cv"></canvas>
     <div id="herramientas">
+      <button class="btn" id="btnAyuda" title="Cómo se juega">?</button>
       <button class="btn" id="btnSonido" title="Música de ambiente">♪ Música</button>
       <button class="btn" id="btnEncuadrar">Encuadrar</button>
       <button class="btn" id="btnGuardar">Guardar</button>
@@ -12489,7 +12497,7 @@ function hayVision(estado, idA, idB, uniformes = 20) {
   const opacas = [];
   for (const [id, p] of Object.entries(estado.puertas)) {
     if (id === idA || id === idB) continue;
-    if (p === "cerrada" || p === "dañada") {
+    if (p === "cerrada" || p === "dañada" || p === "falsa") {
       const c = mapa.casillas.get(id);
       if (c) opacas.push(c);
     }
@@ -12535,11 +12543,17 @@ function segmentosVentanasFalsas(estado) {
 
 function bloqueaPaso(estado, id) {
   const p = estado.puertas[id];
-  return p === "cerrada" || p === "dañada";
+  return p === "cerrada" || p === "dañada" || p === "falsa";
 }
 function vecinasDe(estado, id, opciones = {}) {
   const out = [];
+  for (const p of estado.pasadizos) {
+    const otro = p[0] === id ? p[1] : p[1] === id ? p[0] : null;
+    if (otro && !bloqueaPaso(estado, otro) && !estado.barricadas.includes(otro))
+      out.push({ id: otro, tipo: "pasadizo" });
+  }
   for (const v of estado.mapa.vecinas.get(id) || []) {
+    if (!opciones.ignorarBarricadas && estado.barricadas.includes(v.id)) continue;
     if (v.tipo === "special" || v.tipo === "blocked") continue;   // no dan paso
     if (v.tipo === "window" && estado.ventanas[clave(id, v.id)] === "falsa") continue;
     if (!opciones.ignorarPuertas && bloqueaPaso(estado, v.id)) continue;
@@ -12590,6 +12604,7 @@ function luzDe(estado, id) {
   if (estado.linternas.some(l => l.casillas.includes(id))) return "brillante";
   if (c.zone && estado.zonasEncendidas.has(c.zone)) return "brillante";
   if (estado.brillantes.has(id)) return "brillante";
+  if (c.zone && estado.zonasAtenuadas.has(c.zone)) return "tenue";   // ficha de Penumbra
   return c.light === "dark" ? "oscura" : "tenue";
 }
 
@@ -12819,6 +12834,7 @@ function usarCuerdas(estado, rnd) {
  */
 const EVENTOS = [
   { n: "El incendio se propaga", nivel: 1, texto: "El incendio se extiende, pero es tolerable por ahora. Sin efecto." },
+  { n: "El incendio se propaga (2)", nivel: 1, texto: "El incendio se extiende, pero es tolerable por ahora. Sin efecto." },
   { n: "Árbol caído", nivel: 1, adversario: true, texto: "El Adversario puede colocar 1 ficha de Puerta Falsa en una casilla de Puerta vacía, o 1 ficha de Ventana Falsa en una Ventana, a su elección." },
   { n: "Llamarada", nivel: 1, adversario: true, texto: "El Adversario puede reducir en 1 la Carga de hasta 2 Investigadores." },
   { n: "Humo leve", nivel: 1, texto: "Esta ronda, los Investigadores solo pueden usar la línea central de sus Linternas para trazar la línea de visión." },
@@ -12828,7 +12844,7 @@ const EVENTOS = [
   { n: "Pirocúmulos", nivel: 2, texto: "Esta ronda, los Investigadores que Corran tiran 1D6: con 4 o más reciben 1 Herida." },
   { n: "Cortafuegos", nivel: 2, texto: "Los edificios mantienen el incendio a raya por ahora. Sin efecto." },
   { n: "Vórtice", nivel: 2, adversario: true, texto: "El Adversario elige 1 Zona y coloca fichas de Puerta Destruida en hasta 2 casillas de Puerta y 1 ficha de Ventana Abierta en 1 Ventana de esa Zona. Cada Investigador en esa Zona pierde 1 Resistencia y 1 Carga, sin provocar Herida." },
-  { n: "Tormenta de fuego", nivel: 2, permanente: true, texto: "El resto de la partida, Mover cuesta 1 Resistencia. Los Investigadores aún pueden obtener Carga como Acción Final si Descansan." },
+  { n: "Tormenta de fuego", nivel: 3, permanente: true, texto: "El resto de la partida, Mover cuesta 1 Resistencia. Los Investigadores aún pueden obtener Carga como Acción Final si Descansan." },
   { n: "Gases tóxicos", nivel: 3, permanente: true, texto: "Ahora y al inicio de cada ronda, cada Investigador tira su dado de Correr: con un 3 voltea 1 Herida bocarriba, o recibe 1 Herida al azar si no tiene ninguna. No cuenta como Acción de Correr ni afecta al movimiento ni a la Resistencia." },
   { n: "Remolino de fuego", nivel: 3, permanente: true, adversario: true, texto: "Ahora y al inicio de cada ronda, tira 1D6. Con 1-3 cada Investigador pierde 1 Carga y 1 Resistencia, sin provocar Herida. Con 4-6 el Adversario coloca fichas de Puerta Destruida en todas las casillas de Puerta de 1 Zona a su elección, y puede voltear 1 ficha de Puerta Falsa a otra casilla vacía; cada Investigador en esa Zona voltea 1 Herida bocarriba al azar." },
 ];
@@ -12841,12 +12857,57 @@ function montarEventos(rnd) {
   return men.concat(mod, may ? [may] : []);
 }
 function robarEvento(estado) {
-  if (!estado.mazoEventos || !estado.mazoEventos.length)
-    return resultado(false, "el mazo de Eventos se ha agotado");
-  const c = estado.mazoEventos.shift();
+  if (!estado.mazoEventos) return resultado(true, null, []);        // partida sin Eventos
+  if (!estado.mazoEventos.length) {
+    // el mazo termina en el Evento Mayor, que es permanente y sigue disparándose
+    const may = estado.eventoActual;
+    if (may && may.permanente)
+      return resultado(true, null, [anuncia(estado, `Sigue en vigor: ${may.n}. ${may.texto}`)]);
+    estado.eventoActual = null;
+    return resultado(false, "mazo agotado",
+      [anuncia(estado, "El mazo de Eventos se ha agotado.")]);
+  }
+  const c = estado.mazoEventos.shift();   // se descarta el anterior y se resuelve el nuevo
   estado.eventoActual = c;
   if (c.permanente) estado.eventosPermanentes.push(c.n);
-  return resultado(true, null, [anuncia(estado, `Evento: ${c.n}. ${c.texto}`)]);
+  const texto = `Evento: ${c.n}. ${c.texto}` +
+    (c.adversario ? " (esta carta la decide el Adversario)" : "");
+  return resultado(true, null, [anuncia(estado, texto)]);
+}
+/** Lo que decide el Adversario en las cartas que se lo permiten. */
+function resolverEventoAdversario(estado, rnd) {
+  const c = estado.eventoActual;
+  if (!c || !c.adversario) return resultado(true, null, []);
+  const a = estado.adversario, anuncios = [];
+  const elige = arr => arr[Math.floor(rnd() * arr.length)];
+  if (c.n === "Árbol caído") {
+    // tapiar una puerta vacía cercana a los investigadores
+    const puertas = [...estado.mapa.casillas.values()].filter(n =>
+      n.type === "door" && (estado.puertas[n.id] || "abierta") === "abierta");
+    if (puertas.length) {
+      const p = elige(puertas);
+      estado.puertas[p.id] = "falsa";
+      anuncios.push(anuncia(estado, `Puerta Falsa en ${p.id}.`));
+    }
+  } else if (c.n === "Llamarada") {
+    const dos = estado.investigadores.slice(0, 2).map(i => i.id);
+    anuncios.push(anuncia(estado, `${dos.join(" y ")} pierden 1 de Carga.`));
+  } else if (c.n === "Vórtice" || c.n === "Remolino de fuego") {
+    // la Zona donde haya más investigadores
+    const cuenta = {};
+    for (const i of estado.investigadores) {
+      const z = estado.mapa.casillas.get(i.casilla)?.zone;
+      if (z) cuenta[z] = (cuenta[z] || 0) + 1;
+    }
+    const zona = Object.entries(cuenta).sort((x, y) => y[1] - x[1])[0];
+    const z = zona ? zona[0] : elige([...estado.mapa.zonas]);
+    const puertas = [...estado.mapa.casillas.values()].filter(n => n.type === "door" && n.zone === z);
+    for (const p of puertas) estado.puertas[p.id] = "destruida";
+    anuncios.push(anuncia(estado,
+      `Zona elegida: ${z}. Puertas Destruidas en ${puertas.map(p => p.id).join(", ") || "ninguna"}.` +
+      ` Los Investigadores en ${z} sufren lo que indica la carta.`));
+  }
+  return resultado(true, null, anuncios);
 }
 
 const EVIDENCIA_NECESARIA = { 2: 2, 3: 3, 4: 5 };
@@ -12894,6 +12955,23 @@ const PERFILES = {
                retiraSombraAlEmpezar: false, desapareceEnBrillante: true },
 };
 
+/** El manual deja al Adversario colocarse donde quiera; aquí se sortea. */
+function colocacionInicial(estado, rnd, minimo = 8) {
+  const inicios = estado.investigadores.map(i => i.casilla);
+  const buenas = [], todas = [...estado.mapa.casillas.keys()];
+  for (const id of todas) {
+    if (estado.mapa.casillas.get(id).type === "door") continue;
+    let lejos = true;
+    for (const s of inicios) {
+      const d = distancia(estado, id, s);
+      if (d === null || d < minimo) { lejos = false; break; }
+    }
+    if (lejos) buenas.push(id);
+  }
+  const bolsa = buenas.length ? buenas : todas;
+  return bolsa[Math.floor(rnd() * bolsa.length)];
+}
+
 function crearPartida(opciones) {
   const mapa = prepararMapa(opciones.mapa);
   const perfil = Object.assign({}, PERFILES[opciones.adversario] || PERFILES.carnicero,
@@ -12920,6 +12998,11 @@ function crearPartida(opciones) {
     puertas: Object.assign({}, opciones.puertas),      // id -> abierta|cerrada|dañada|destruida
     ventanas: Object.assign({}, opciones.ventanas),    // "a|b" -> normal|abierta|falsa
     zonasEncendidas: new Set(opciones.zonasEncendidas || []),
+    lucesFundidas: new Set(opciones.lucesFundidas || []),
+    zonasAtenuadas: new Set(opciones.zonasAtenuadas || []),
+    pasadizos: [],        // pares de casillas que quedan conectadas
+    delatoras: [],        // fichas tipo Latas: avisan si el Adversario las pisa
+    barricadas: [],       // casillas que el Adversario no puede cruzar
     linternas: [],                                     // [{de, casillas:[]}]
     brillantes: new Set(),                             // casillas brillantes sueltas
     ruido: new Set(),                                  // claves de ventana con ficha de Ruido
@@ -13029,15 +13112,21 @@ function mover(estado, ruta) {
   let coste = 0;
   let actual = a.casilla;
   for (const destino of ruta) {
-    const paso = (estado.mapa.vecinas.get(actual) || []).find(v => v.id === destino);
+    let paso = (estado.mapa.vecinas.get(actual) || []).find(v => v.id === destino);
+    if (!paso && estado.pasadizos.some(p =>
+        (p[0] === actual && p[1] === destino) || (p[1] === actual && p[0] === destino)))
+      paso = { id: destino, tipo: "pasadizo" };
     if (!paso) return resultado(false, `${actual} y ${destino} no están conectadas`);
     if (paso.tipo === "special" || paso.tipo === "blocked")
       return resultado(false, `no se puede mover de ${actual} a ${destino}`);
     const k = clave(actual, destino);
     if (paso.tipo === "window" && estado.ventanas[k] === "falsa")
       return resultado(false, `la ventana entre ${actual} y ${destino} es falsa`);
+    if (estado.barricadas.includes(destino))
+      return resultado(false, `${destino} está barricada`);
     if (bloqueaPaso(estado, destino))
-      return resultado(false, `la puerta de ${destino} está ${estado.puertas[destino]}`);
+      return resultado(false, estado.puertas[destino] === "falsa"
+        ? `${destino} es una Puerta Falsa` : `la puerta de ${destino} está ${estado.puertas[destino]}`);
 
     let c = 1;                                   // para el Adversario, Oscura cuesta 1
     if (paso.tipo === "window" && estado.ventanas[k] !== "abierta") c += 1;
@@ -13053,6 +13142,10 @@ function mover(estado, ruta) {
       anuncios.push(anuncia(estado, `Ruido en la ventana entre ${x} y ${y}.`));
     }
     a.casilla = destino;
+    if (estado.delatoras.includes(destino)) {
+      estado.delatoras = estado.delatoras.filter(c => c !== destino);
+      anuncios.push(anuncia(estado, `Se oye algo en ${destino}: voltead la ficha.`));
+    }
     if (estado.perfil.seRevelaAlMoverse && a.oculto && luzDe(estado, destino) === "brillante") {
       a.oculto = false;
       anuncios.push(anuncia(estado, `El Adversario queda Revelado en ${destino}.`));
@@ -13192,10 +13285,34 @@ function ponerLinterna(estado, idInv, casillas) {
   estado.linternas.push({ de: idInv, casillas: casillas.slice() });
   return revisarRevelado(estado);
 }
+/**
+ * Interruptor: ilumina la Zona el resto de la ronda. Al acabar, la ficha pasa
+ * a Luces Fallidas y esa Zona ya no puede volver a encenderse en toda la partida.
+ */
 function encenderZona(estado, zona) {
+  if (estado.lucesFundidas.has(zona))
+    return resultado(false, `las luces de la Zona ${zona} ya se fundieron: no vuelven a encenderse`);
+  if (estado.zonasEncendidas.has(zona))
+    return resultado(false, `la Zona ${zona} ya está encendida`);
   estado.zonasEncendidas.add(zona);
   return revisarRevelado(estado);
 }
+/** Si cierran la puerta en la que está, queda Revelado y tiene que salir. */
+function cerrarPuerta(estado, id) {
+  if (estado.mapa.casillas.get(id)?.type !== "door") return resultado(false, `${id} no es una puerta`);
+  const actual = estado.puertas[id] || "abierta";
+  if (actual !== "abierta") return resultado(false, `esa puerta está ${actual}`);
+  estado.puertas[id] = "cerrada";
+  const anuncios = [];
+  if (estado.adversario.casilla === id) {
+    estado.adversario.oculto = false;
+    const salidas = vecinasDe(estado, id).map(v => v.id);
+    anuncios.push(anuncia(estado, `¡El Adversario estaba en ${id}! Queda Revelado y sale a ${salidas[0] || "la casilla contigua"}.`));
+    if (salidas.length) estado.adversario.casilla = salidas[0];
+  }
+  return resultado(true, null, anuncios);
+}
+
 function moverInvestigador(estado, idInv, casilla) {
   const inv = estado.investigadores.find(i => i.id === idInv);
   if (!inv) return resultado(false, "no existe ese investigador");
@@ -13242,6 +13359,11 @@ function finDeRonda(estado) {
     anuncios.push(anuncia(estado, "Retirad todas las linternas del tablero."));
     estado.linternas = [];
   }
+  for (const z of estado.zonasEncendidas) {
+    estado.lucesFundidas.add(z);
+    anuncios.push(anuncia(estado, `Las luces de la Zona ${z} se funden: voltead la ficha a Luces Fallidas. No volverán a encenderse.`));
+  }
+  estado.zonasEncendidas.clear();
   for (const inv of estado.investigadores) {
     if (inv.escalofrio && inv.escalofrio.ronda < estado.ronda) {
       inv.escalofrio = null;
@@ -13299,9 +13421,9 @@ const api = {
   romperPuerta, desaparecer, finDeRonda, puedeAtacar, atacar, CARTAS_ATAQUE,
   HABILIDADES, habilidadDisponible, usarHabilidad, recargar, terminarTurnoAdversario,
   ESCAPES, EVIDENCIA_NECESARIA, manoDeEscape, elegirEscape,
-  herir, escapar, entregarEvidencia,
+  herir, escapar, entregarEvidencia, colocacionInicial, cerrarPuerta,
   prepararDestierro, revisarTumba, exhumar, usarGarfio, usarCuerdas,
-  EVENTOS, montarEventos, robarEvento,
+  EVENTOS, montarEventos, robarEvento, resolverEventoAdversario,
   ponerLinterna, encenderZona, moverInvestigador, revisarRevelado,
   parteDelTurno, estadoOculto, PERFILES,
 };
@@ -13325,9 +13447,12 @@ const M = raiz.MotorTSD;
 const CARAS_SPRINT = [2, 3, 2, 4, 3, 3];
 
 const NIVELES = {
-  facil:   { nombre: "Fácil",   caida: 0.80, ruido: 0.35, miopia: 5, agresion: 0.6 },
-  normal:  { nombre: "Normal",  caida: 0.45, ruido: 0.18, miopia: 8, agresion: 1.0 },
-  dificil: { nombre: "Difícil", caida: 0.22, ruido: 0.07, miopia: 99, agresion: 1.4 },
+  // caida: cuánto cae la probabilidad por puesto · ruido: capricho al puntuar
+  // miopia: hasta dónde mira para Acechar · remata: cuánto se ceba con el herido
+  // dudaAtaque: con qué probabilidad deja escapar un ataque que podía hacer
+  facil:   { nombre: "Fácil",   caida: 0.80, ruido: 0.35, miopia: 5,  agresion: 0.6, remata: 0 },
+  normal:  { nombre: "Normal",  caida: 0.45, ruido: 0.18, miopia: 8,  agresion: 1.0, remata: 6 },
+  dificil: { nombre: "Difícil", caida: 0.20, ruido: 0.06, miopia: 99, agresion: 1.4, remata: 16 },
 };
 
 // generador reproducible, para poder repetir una partida si hace falta
@@ -13388,12 +13513,30 @@ function mapaDeAcecho(estado, nivel) {
       if (!M.hayVision(estado, casilla, inv.casilla)) continue;
       if (!tabla.has(casilla)) tabla.set(casilla, []);
       tabla.get(casilla).push({ id: inv.id, distancia: dist.get(casilla) || 0,
-                                tieneEscalofrio: !!inv.escalofrio });
+                                tieneEscalofrio: !!inv.escalofrio, heridas: inv.heridas || 0 });
     }
   }
   return tabla;
 }
 function acechablesDesde(tabla, casilla) { return tabla.get(casilla) || []; }
+
+/** Las ventanas delatan: cuesta 1 MP y deja una ficha de Ruido en el tablero. */
+function ventanasDeLaRuta(estado, desde, ruta) {
+  let n = 0, actual = desde;
+  for (const sig of ruta || []) {
+    const paso = (estado.mapa.vecinas.get(actual) || []).find(v => v.id === sig);
+    if (paso && paso.tipo === "window" &&
+        estado.ventanas[M.clave(actual, sig)] !== "abierta" &&
+        !estado.adversario.ventanasSonadas.has(M.clave(actual, sig))) n++;
+    actual = sig;
+  }
+  return n;
+}
+/** Casillas que hay que vigilar una vez elegido el Objetivo. */
+function fichasDelObjetivo(estado) {
+  if (!estado.escape || !estado.escape.fichas) return [];
+  return Object.values(estado.escape.fichas).filter(Boolean);
+}
 
 /** Cuánto vale quedarse en una casilla al terminar el turno. */
 function valorPosicion(estado, casilla, nivel, tabla, distInv) {
@@ -13413,6 +13556,21 @@ function valorPosicion(estado, casilla, nivel, tabla, distInv) {
   // posiciones desde las que mañana se podrá Acechar
   const futuros = acechablesDesde(tabla, casilla).length;
   v += futuros * 9;
+
+  // con el Objetivo elegido, vigilar las fichas hacia las que van ellos:
+  // guardar algo que nadie está buscando no sirve de nada
+  for (const f of fichasDelObjetivo(estado)) {
+    const d = M.distancia(estado, casilla, f);
+    if (d === null || d > 7) continue;
+    let dInv = null;
+    for (const i of estado.investigadores) {
+      const di = M.distancia(estado, i.casilla, f);
+      if (di !== null && (dInv === null || di < dInv)) dInv = di;
+    }
+    if (dInv === null || dInv > 10) continue;
+    const urgencia = Math.max(0, 11 - dInv) / 10;          // 0 lejos, 1 encima
+    v += (8 - d) * 5 * urgencia * nivel.agresion;
+  }
   return v;
 }
 
@@ -13440,7 +13598,8 @@ function planes(estado, nivel, rnd) {
     const obj = acechablesDesde(tabla, p);
     if (!obj.length) continue;
     let val = 0;
-    for (const o of obj) val += o.tieneEscalofrio ? 40 : 18;   // cerrar el Acecho vale más
+    // cerrar el Acecho vale más, y rematar a quien ya va tocado, más todavía
+    for (const o of obj) val += (o.tieneEscalofrio ? 40 : 18) + o.heridas * nivel.remata;
     val += obj.length > 1 ? 10 : 0;
     puntos.push({ casilla: p, objetivos: obj, valor: val, coste: coste.get(p) });
   }
@@ -13456,6 +13615,7 @@ function planes(estado, nivel, rnd) {
     }
     lista.push({
       tipo: "acechar",
+      imprescindible: true,
       acecharEn: p.casilla, objetivos: p.objetivos.map(o => o.id),
       rutaIda: ruta(previo, p.casilla),
       rutaVuelta: mejor ? ruta(sub.previo, mejor.f) : [],
@@ -13487,7 +13647,23 @@ function planes(estado, nivel, rnd) {
     }
   }
 
+  // descontar por cada ventana que delataría el paso
+  const castigo = 14 * (nivel.agresion > 1 ? 1.4 : nivel.agresion < 1 ? 0.6 : 1);
+  for (const p of lista) {
+    let v = ventanasDeLaRuta(estado, estado.adversario.casilla, p.rutaIda);
+    const trasIda = p.rutaIda && p.rutaIda.length ? p.rutaIda[p.rutaIda.length - 1] : estado.adversario.casilla;
+    v += ventanasDeLaRuta(estado, trasIda, p.rutaVuelta);
+    p.ventanas = v;
+    p.puntos -= v * castigo;
+  }
   for (const p of lista) p.puntos += (rnd() - 0.5) * 2 * nivel.ruido * 40;
+  // Acechar y Atacar son su condición de victoria: si hay ocasión, va a por ella
+  if (lista.some(p => p.imprescindible)) {
+    const soloAcecho = lista.filter(p => p.imprescindible);
+    soloAcecho.sort((x, y) => y.puntos - x.puntos);
+    const resto = lista.filter(p => !p.imprescindible).sort((x, y) => y.puntos - x.puntos);
+    return soloAcecho.concat(resto);
+  }
   lista.sort((x, y) => y.puntos - x.puntos);
   return lista;
 }
@@ -13495,7 +13671,10 @@ function planes(estado, nivel, rnd) {
 /** Elige por puesto: la mejor casi siempre, la segunda a veces, la tercera poco. */
 function elegir(lista, nivel, rnd) {
   if (!lista.length) return null;
-  const n = Math.min(lista.length, 8);
+  const hayAcecho = lista.some(p => p.imprescindible);
+  const n = hayAcecho
+    ? Math.min(lista.filter(p => p.imprescindible).length, 8)   // elige entre los que Acechan
+    : Math.min(lista.length, 8);
   const pesos = [];
   let suma = 0;
   for (let i = 0; i < n; i++) { const w = Math.pow(nivel.caida, i); pesos.push(w); suma += w; }
@@ -13536,9 +13715,11 @@ function jugarTurno(estado, opciones = {}) {
   }
   if (p.rutaVuelta && p.rutaVuelta.length) anuncios.push(...M.mover(estado, p.rutaVuelta).anuncios);
 
-  // ya colocado: si alguien ha quedado adyacente y hay Acecho que gastar, atacar
-  // si alguien queda adyacente y hay Acecho que gastar, atacar
-  for (const inv of estado.investigadores) {
+  // ya colocado: si alguien ha quedado adyacente y hay Acecho que gastar, atacar.
+  // cuanto más duro el nivel, más se ceba con quien está más cerca de morir
+  const victimas = estado.investigadores.slice().sort((x, y) =>
+    nivel.remata ? (y.heridas || 0) - (x.heridas || 0) : rnd() - 0.5);
+  for (const inv of victimas) {
     if (estado.adversario.acecho < 1) break;
     for (const carta of estado.adversario.cartas) {
       if (!M.puedeAtacar(estado, inv.id, carta).ok) continue;
@@ -13576,10 +13757,14 @@ function jugarTurno(estado, opciones = {}) {
     if (r.ok) anuncios.push(...r.anuncios);
   }
   anuncios.push(...M.terminarTurnoAdversario(estado).anuncios);
-  return { anuncios, plan: p, puesto: elegido.puesto, dado: cara, opciones: lista.length };
+  return { anuncios, plan: p, puesto: elegido.puesto, dado: cara, opciones: lista.length,
+           secreto: { casilla: estado.adversario.casilla, mp: estado.adversario.mp,
+                      acecho: estado.adversario.acecho, oculto: estado.adversario.oculto,
+                      tipo: p.tipo, ventanas: p.ventanas || 0,
+                      ruta: (p.rutaIda || []).concat(p.rutaVuelta || []) } };
 }
 
-const api = { NIVELES, CARAS_SPRINT, azar, alcance, mapaDeAcecho, acechablesDesde, valorPosicion, planes, elegir, jugarTurno };
+const api = { NIVELES, CARAS_SPRINT, azar, ventanasDeLaRuta, fichasDelObjetivo, alcance, mapaDeAcecho, acechablesDesde, valorPosicion, planes, elegir, jugarTurno };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else raiz.IA_TSD = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
@@ -13591,6 +13776,17 @@ const M = window.MotorTSD, IA = window.IA_TSD;
 const $ = id => document.getElementById(id);
 const MAPA = window.MAPA_TSD;
 const INICIO = MAPA.nodes.filter(n => n.type === "start").map(n => n.id);
+// paleta para los investigadores: ninguno se parece al rojo del Adversario,
+// al verde de los hallazgos ni al ámbar de los Eventos
+const PALETA = ["#6FB7D6", "#B48BE0", "#E0A86F", "#D98BA8", "#8FD0C4", "#C9C06F"];
+const ROJO = "#E86A52", VERDE = "#6FD68C", AMBAR = "#F0B43C", GRIS = "#8A9A8C";
+function colorDe(quien) {
+  if (!J) return GRIS;
+  if (quien === "Adversario") return ROJO;
+  if (quien === "Hallazgo") return VERDE;
+  if (quien === "Evento") return AMBAR;
+  return (J.colores && J.colores[quien]) || GRIS;
+}
 
 let J = null;                 // partida
 let img = null;
@@ -13678,16 +13874,20 @@ function comenzar() {
     investigadores: jugadores.map(j => ({ id: j.inv, casilla: j.casilla })),
   });
   estado.ocultos = [];
-  estado.mazoEventos = M.montarEventos(rnd);
+  const conEventos = $("conEventos").checked;
+  estado.mazoEventos = conEventos ? M.montarEventos(rnd) : null;
   const prep = prepararOculto(estado, n, rnd);
-  // el Adversario empieza donde quiera, oculto: lo más lejos posible de la entrada
-  const lejos = [...estado.mapa.casillas.keys()]
-    .map(id => ({ id, d: M.distancia(estado, id, jugadores[0].casilla) || 0 }))
-    .sort((a, b) => b.d - a.d).slice(0, 25);
-  estado.adversario.casilla = lejos[Math.floor(rnd() * lejos.length)].id;
+  // el manual le deja colocarse donde quiera: lo sorteamos, lejos de la entrada
+  estado.adversario.casilla = M.colocacionInicial(estado, rnd);
 
+  const mezcla = PALETA.slice();
+  const colores = {};
+  for (const j of jugadores) {
+    const c = mezcla.splice(Math.floor(rnd() * mezcla.length), 1)[0] || GRIS;
+    colores[j.nombre] = c; colores[j.inv] = c;
+  }
   J = {
-    estado, jugadores, semilla, rnd,
+    estado, jugadores, semilla, rnd, secreto: [], colores,
     nivel: $("nivel").value,
     turno: null,                 // índice del jugador en turno
     hechos: new Set(),           // quién ha jugado ya esta ronda
@@ -13695,8 +13895,14 @@ function comenzar() {
     borrador: null,
   };
   for (const p of prep.pasos) apunta("Preparación", p);
-  const ev = M.robarEvento(estado);
-  ev.anuncios.forEach(t => apunta("Evento", t));
+  if (conEventos) {
+    const ev = M.robarEvento(estado);
+    ev.anuncios.forEach(t => apunta("Evento", t));
+    M.resolverEventoAdversario(estado, rnd).anuncios.forEach(t => apunta("Evento", t));
+  } else {
+    apunta("Preparación", "Partida sin cartas de Evento: sin incendio que meta prisa, " +
+      "las 17 rondas dan mucho más margen y el Carnicero no recibe ayudas del tablero.");
+  }
   apunta("Preparación", `Partida lista. Dificultad: ${IA.NIVELES[J.nivel].nombre}.`);
   $("preparacion").hidden = true;
   $("partida").hidden = false;
@@ -13716,7 +13922,7 @@ function apunta(quien, texto) {
 function pintarLog() {
   const ultimos = J.bitacora.slice(-14).reverse();
   $("log").innerHTML = ultimos.map(b =>
-    `<li><b>R${b.ronda} · ${b.quien}</b> ${b.texto}</li>`).join("");
+    `<li style="color:${colorDe(b.quien)}"><b>R${b.ronda} · ${b.quien}</b> ${b.texto}</li>`).join("");
   $("totalLog").textContent = J.bitacora.length;
 }
 /** La partida entera, agrupada por rondas. */
@@ -13729,9 +13935,22 @@ function textoBitacora() {
     if (b.ronda !== ronda) { ronda = b.ronda; l.push(``, `── Ronda ${ronda} ──`); }
     l.push(`  ${b.quien}: ${b.texto}`);
   }
-  if (J.estado.desenlace) l.push(``, `Resultado: ${
-    J.estado.desenlace === "adversario" ? "gana el Carnicero" :
-    J.estado.desenlace === "empate" ? "tablas" : "ganan los Investigadores"}`);
+  if (J.estado.desenlace) {
+    l.push(``, `Resultado: ${
+      J.estado.desenlace === "adversario" ? "gana el Carnicero" :
+      J.estado.desenlace === "empate" ? "tablas" : "ganan los Investigadores"}`);
+    l.push(``, `══ Lo que hizo el Adversario a escondidas ══`,
+      `Carta de Ataque: ${J.estado.adversario.cartas.join(", ")}`,
+      `Habilidades: ${(J.estado.adversario.habilidades || []).join(", ") || "ninguna"}`);
+    if (J.estado.destierro)
+      l.push(`Tumba real en ${J.estado.destierro.real}, pista en ${J.estado.destierro.señuelo}`);
+    for (const s of J.secreto) {
+      l.push(`  Ronda ${s.ronda}: acabó en ${s.casilla}, plan "${s.tipo}", dado ${s.dado}, ` +
+             `${s.ventanas} ventana(s), Acecho ${s.acecho}, ${s.oculto ? "oculto" : "revelado"}` +
+             ` · eligió la opción ${s.puesto} de ${s.opciones}`);
+      if (s.ruta && s.ruta.length) l.push(`      recorrido: ${s.ruta.join(" → ")}`);
+    }
+  }
   return l.join("\n");
 }
 function verBitacora() {
@@ -13739,7 +13958,7 @@ function verBitacora() {
   let ronda = null, html = "";
   for (const b of J.bitacora) {
     if (b.ronda !== ronda) { ronda = b.ronda; html += `<h4 style="color:var(--moss);margin:12px 0 4px">Ronda ${ronda}</h4>`; }
-    html += `<div style="padding:3px 0;border-bottom:1px solid rgba(51,66,55,.4)"><b style="color:var(--moss)">${b.quien}</b> ${b.texto}</div>`;
+    html += `<div style="padding:3px 0;border-bottom:1px solid rgba(51,66,55,.4);color:${colorDe(b.quien)}"><b>${b.quien}</b> ${b.texto}</div>`;
   }
   $("modalCuerpo").innerHTML = `<div style="max-height:58vh;overflow:auto">${html || "<i>Aún no hay nada anotado.</i>"}</div>
     <button class="btn" id="btnDescargarLog" style="width:100%;margin-top:10px">Descargar la bitácora en texto</button>`;
@@ -13760,8 +13979,12 @@ function refrescar() {
   $("nivelActivo").textContent = IA.NIVELES[J.nivel].nombre;
   const pendientes = J.jugadores.filter(j => !J.hechos.has(j.inv));
   const evi = `Evidencia ${e.evidencias}/${e.evidenciaNecesaria}`;
-  $("objetivo").textContent = (e.escape ? `Objetivo: ${e.escape.nombre}` : evi) +
-    (e.eventoActual ? ` · Evento: ${e.eventoActual.n}` : "");
+  $("objetivo").textContent = e.escape ? `Objetivo: ${e.escape.nombre}` : evi;
+  $("evento").innerHTML = e.eventoActual
+    ? `<b>Evento de la ronda: ${e.eventoActual.n}</b><br>${e.eventoActual.texto}` +
+      (e.eventosPermanentes.length > 1 || (e.eventosPermanentes.length === 1 && e.eventosPermanentes[0] !== e.eventoActual.n)
+        ? `<br><i>Siguen activos: ${e.eventosPermanentes.filter(n => n !== e.eventoActual.n).join(", ")}</i>` : "")
+    : (e.mazoEventos ? "<i>Sin Evento esta ronda.</i>" : "<i>Partida sin cartas de Evento.</i>");
   $("fase").textContent = pendientes.length
     ? `Turnos de Investigadores · faltan ${pendientes.length}`
     : "Turno del Adversario";
@@ -13771,8 +13994,8 @@ function refrescar() {
     const inv = e.investigadores.find(x => x.id === j.inv);
     const estados = (inv.estados || []).join(", ");
     return `<button class="jugador${activo ? " activo" : ""}${hecho ? " hecho" : ""}"
-      data-i="${i}" ${hecho ? "disabled" : ""}>
-      <b>${j.nombre}</b><span>${j.inv} · ${inv.casilla}${inv.escalofrio ? " · Escalofrío" : ""}${estados ? " · " + estados : ""}</span>
+      data-i="${i}" ${hecho ? "disabled" : ""} style="border-left:4px solid ${colorDe(j.nombre)}">
+      <b style="color:${colorDe(j.nombre)}">${j.nombre}</b><span>${j.inv} · ${inv.casilla}${inv.escalofrio ? " · Escalofrío" : ""}${estados ? " · " + estados : ""}</span>
       <i>${hecho ? "turno jugado" : activo ? "en turno" : "pendiente"}</i></button>`;
   }).join("");
   $("listaJugadores").querySelectorAll(".jugador").forEach(b =>
@@ -13799,7 +14022,7 @@ function elegirJugador(i) {
   if (J.hechos.has(J.jugadores[i].inv)) return;
   J.turno = i;
   const inv = J.estado.investigadores.find(x => x.id === J.jugadores[i].inv);
-  J.borrador = { destino: inv.casilla, linterna: null, zona: null, puertas: {} };
+  J.borrador = { destino: inv.casilla, linterna: null, barrido: null, zona: null, puertas: {} };
   modo = "posicion"; seleccion.clear();
   refrescar(); pista();
 }
@@ -13808,17 +14031,26 @@ function pintarPanelTurno() {
   const j = J.jugadores[J.turno], b = J.borrador;
   const encendible = J.estado.mapa.casillas.get(b.destino);
   $("panelTurno").innerHTML = `
-    <h3>Turno de ${j.nombre} <small>(${j.inv})</small></h3>
+    <h3 style="color:${colorDe(j.nombre)}">Turno de ${j.nombre} <small style="color:var(--moss)">(${j.inv})</small></h3>
     <div class="campo"><span>Casilla final</span><b>${b.destino}</b>
       <button class="mini" id="btnPos">Marcar en el tablero</button></div>
     <div class="campo"><span>Linterna</span>
       <b>${b.linterna ? b.linterna.join(", ") : "sin colocar"}</b>
       <button class="mini" id="btnLinterna">${modo === "linterna" ? "Validar selección" : "Marcar casillas"}</button>
       ${b.linterna ? '<button class="mini" id="btnQuitarLinterna">Quitar</button>' : ""}</div>
+    ${b.linterna && !b.barrido
+      ? `<div class="campo"><span>Barrido</span>
+         <button class="mini" id="btnBarrido">Barrer con la linterna (Mitchell)</button></div>` : ""}
+    ${b.barrido ? `<div class="campo"><span>Primera posición</span><b>${b.barrido.join(", ")}</b></div>` : ""}
     ${encendible && encendible.type === "lightswitch"
       ? `<div class="campo"><span>Interruptor de ${encendible.switchZone || encendible.zone}</span>
          <button class="mini" id="btnLuz">Encender la Zona</button></div>` : ""}
     <div class="campo"><span>Puertas adyacentes</span><div id="puertasCerca"></div></div>
+    <div class="campo"><span>Fichas propias</span>
+      <button class="mini" id="btnLata">Lata</button>
+      <button class="mini" id="btnBarricada">Barricada</button>
+      <button class="mini" id="btnPenumbra">Penumbra en la Zona</button>
+      <button class="mini" id="btnPasadizo">Pasadizo</button></div>
     <div class="campo"><span>Heridas</span>
       <b>${(J.estado.investigadores.find(x => x.id === j.inv).heridas || 0)} de 4</b>
       <button class="mini" id="btnHerida">+1 Herida</button></div>
@@ -13827,9 +14059,22 @@ function pintarPanelTurno() {
     ${J.estado.escape ? `<div class="campo"><span>Objetivo</span><button class="mini" id="btnEscapar">Ha escapado</button></div>` : ""}
     <button class="btn primario" id="btnFin">Validar y terminar turno</button>
     <button class="btn" id="btnSoltar" style="width:100%;margin-top:6px">Dejarlo para luego</button>
-    <p class="aviso">Una vez validado el turno no se puede rectificar.</p>`;
+    <p class="aviso">Lo que ilumines no se destapa hasta que valides el turno, así que puedes rectificar. Una vez validado, no.</p>`;
   $("btnPos").onclick = () => { modo = modo === "posicion" ? null : "posicion"; pista(); dibujar(); };
   $("btnLinterna").onclick = () => modo === "linterna" ? validarLinterna() : (modo = "linterna", seleccion.clear(), pista(), dibujar());
+  if ($("btnBarrido")) $("btnBarrido").onclick = () => {
+    confirmar("El Barrido alumbra en dos sitios: esta primera posición destapa lo que haya " +
+      "y después mueves la linterna, que se queda en el segundo sitio el resto de la ronda.\n\n" +
+      "¿Fijo esta primera posición? Lo que ilumine se destapará ahora.", () => {
+      b.barrido = b.linterna.slice();
+      apunta(j.nombre, `Barrido: primera posición sobre ${b.barrido.join(", ")}.`);
+      revelarPorLuz([]);                       // la primera posición sí destapa al momento
+      b.linterna = null;
+      J.estado.linternas = J.estado.linternas.filter(l => l.de !== j.inv);
+      modo = "linterna"; seleccion.clear();
+      refrescar(); pista();
+    });
+  };
   if ($("btnQuitarLinterna")) $("btnQuitarLinterna").onclick = () => {
     J.estado.linternas = J.estado.linternas.filter(l => l.de !== j.inv);
     b.linterna = null; refrescar();
@@ -13837,8 +14082,8 @@ function pintarPanelTurno() {
   if ($("btnLuz")) $("btnLuz").onclick = () => {
     const z = encendible.switchZone || encendible.zone;
     const r = M.encenderZona(J.estado, z);
-    apunta(j.nombre, `Enciende las luces de la Zona ${z}.`);
-    revelarPorLuz(r.anuncios);
+    if (!r.ok) { alerta(r.motivo); return; }
+    apunta(j.nombre, `Enciende las luces de la Zona ${z}. Solo durarán esta ronda.`);
     refrescar();
   };
   const cerca = [...M.aMenosDe(J.estado, b.destino, 1, { ignorarPuertas: true })]
@@ -13846,6 +14091,42 @@ function pintarPanelTurno() {
   $("puertasCerca").innerHTML = cerca.length ? cerca.map(id =>
     `<button class="mini puerta" data-p="${id}">${id}: ${J.estado.puertas[id]}</button>`).join("") : "<i>ninguna</i>";
   $("puertasCerca").querySelectorAll(".puerta").forEach(bt => bt.onclick = () => cambiarPuerta(bt.dataset.p));
+  $("btnLata").onclick = () => {
+    const e = J.estado;
+    if (e.delatoras.includes(b.destino)) { alerta("Ya hay una ahí."); return; }
+    e.delatoras.push(b.destino);
+    apunta(j.nombre, `Deja una ficha en ${b.destino}: sonará si el Adversario la pisa.`);
+    refrescar();
+  };
+  $("btnBarricada").onclick = () => {
+    const e = J.estado;
+    if (e.barricadas.includes(b.destino)) {
+      e.barricadas = e.barricadas.filter(c => c !== b.destino);
+      apunta(j.nombre, `Retira la barricada de ${b.destino}.`);
+    } else {
+      e.barricadas.push(b.destino);
+      apunta(j.nombre, `Coloca una barricada en ${b.destino}.`);
+    }
+    refrescar();
+  };
+  $("btnPenumbra").onclick = () => {
+    const z = J.estado.mapa.casillas.get(b.destino)?.zone;
+    if (!z) { alerta("Esa casilla no pertenece a ninguna Zona."); return; }
+    J.estado.zonasAtenuadas.add(z);
+    apunta(j.nombre, `Coloca la ficha de Penumbra en la Zona ${z}: pasa a Tenue.`);
+    refrescar();
+  };
+  $("btnPasadizo").onclick = () => {
+    if (!J.pasadizoPendiente) {
+      J.pasadizoPendiente = b.destino;
+      alerta(`Pasadizo abierto en ${b.destino}. Ahora marca la otra casilla y vuelve a pulsar Pasadizo.`);
+    } else {
+      J.estado.pasadizos.push([J.pasadizoPendiente, b.destino]);
+      apunta(j.nombre, `Pasadizo Secreto entre ${J.pasadizoPendiente} y ${b.destino}.`);
+      J.pasadizoPendiente = null;
+      refrescar();
+    }
+  };
   $("btnSoltar").onclick = () => { J.turno = null; J.borrador = null; modo = null; seleccion.clear(); refrescar(); pista(); };
   $("btnHerida").onclick = () => {
     const r = M.herir(J.estado, j.inv);
@@ -13868,10 +14149,20 @@ function pintarPanelTurno() {
 }
 
 function cambiarPuerta(id) {
-  const e = J.estado, actual = e.puertas[id];
-  if (actual === "dañada" || actual === "destruida") { alerta("Esa puerta está rota: ya no se puede cerrar."); return; }
-  e.puertas[id] = actual === "cerrada" ? "abierta" : "cerrada";
-  apunta(J.jugadores[J.turno].nombre, `${e.puertas[id] === "cerrada" ? "Cierra" : "Abre"} la puerta de ${id}.`);
+  const e = J.estado, actual = e.puertas[id], nombre = J.jugadores[J.turno].nombre;
+  if (actual === "destruida" || actual === "falsa") { alerta("Esa puerta ya no se puede manipular."); return; }
+  if (actual === "dañada") {                       // abrirla la destruye
+    e.puertas[id] = "destruida";
+    apunta(nombre, `Abre la puerta dañada de ${id}: queda destruida.`);
+  } else if (actual === "cerrada") {
+    e.puertas[id] = "abierta";
+    apunta(nombre, `Abre la puerta de ${id}.`);
+  } else {
+    const r = M.cerrarPuerta(e, id);
+    if (!r.ok) { alerta(r.motivo); return; }
+    apunta(nombre, `Cierra la puerta de ${id}.`);
+    if (r.anuncios.length) { r.anuncios.forEach(t => apunta("Adversario", t)); parte(r.anuncios); }
+  }
   refrescar();
 }
 
@@ -13882,9 +14173,9 @@ function validarLinterna() {
   const sigue = () => {
     b.linterna = [...seleccion];
     J.estado.linternas = J.estado.linternas.filter(l => l.de !== j.inv);
-    const r = M.ponerLinterna(J.estado, j.inv, b.linterna);
+    // se alumbra, pero no se destapa nada hasta que el turno quede validado
+    J.estado.linternas.push({ de: j.inv, casillas: b.linterna.slice() });
     apunta(j.nombre, `Coloca la linterna sobre ${b.linterna.join(", ")}.`);
-    revelarPorLuz(r.anuncios);
     modo = null; seleccion.clear(); refrescar();
   };
   if (tapadas.length)
@@ -13895,18 +14186,20 @@ function validarLinterna() {
 
 /** Lo que se descubre al iluminar: Evidencia, Puntos de Interés y el Adversario. */
 function revelarPorLuz(anunciosPrevios) {
-  const e = J.estado, textos = (anunciosPrevios || []).slice();
-  const quedan = [];
-  for (const t of M.revisarTumba(e)) textos.push(t);
+  const e = J.estado, textos = (anunciosPrevios || []).slice(), hallazgos = [], quedan = [];
+  for (const t of M.revisarTumba(e)) hallazgos.push(t);
   for (const t of e.ocultos) {
     if (M.luzDe(e, t.casilla) === "brillante") {
-      textos.push(t.tipo === "evidencia"
+      hallazgos.push(t.tipo === "evidencia"
         ? `¡Evidencia revelada en ${t.casilla}!`
         : `¡Ficha de Punto de Interés revelada en ${t.casilla}!`);
     } else quedan.push(t);
   }
   e.ocultos = quedan;
-  if (textos.length) { textos.forEach(t => apunta("Adversario", t)); parte(textos); }
+  textos.forEach(t => apunta("Adversario", t));
+  hallazgos.forEach(t => apunta("Hallazgo", t));
+  const todo = textos.concat(hallazgos);
+  if (todo.length) parte(todo, null, textos.length ? ROJO : VERDE);
 }
 
 function terminarTurno() {
@@ -13916,10 +14209,10 @@ function terminarTurno() {
     b.linterna ? `Linterna sobre ${b.linterna.join(", ")}.` : "Sin linterna.",
   ].join("\n");
   confirmar(`Turno de ${j.nombre}\n\n${resumen}\n\n¿Validar? Después no se podrá rectificar.`, () => {
-    M.moverInvestigador(J.estado, j.inv, b.destino);
+    const mov = M.moverInvestigador(J.estado, j.inv, b.destino);
     const r = M.revisarRevelado(J.estado);
-    if (r.anuncios.length) { r.anuncios.forEach(t => apunta("Adversario", t)); parte(r.anuncios); }
-    revelarPorLuz([]);
+    mov.anuncios.forEach(t => apunta("Adversario", t));
+    revelarPorLuz(r.anuncios.concat(mov.anuncios));
     apunta(j.nombre, `Termina su turno en ${b.destino}.`);
     J.hechos.add(j.inv);
     J.turno = null; J.borrador = null; modo = null; seleccion.clear();
@@ -13961,6 +14254,8 @@ function turnoAdversario() {
   const e = J.estado;
   pon("adversario");
   const r = IA.jugarTurno(e, { nivel: J.nivel, rnd: J.rnd });
+  J.secreto.push(Object.assign({ ronda: e.ronda }, r.secreto,
+    { puesto: r.puesto, dado: r.dado, opciones: r.opciones }));
   const textos = r.anuncios.length ? r.anuncios : ["El Adversario se mueve en silencio. No hay nada que anunciar."];
   textos.forEach(t => apunta("Adversario", t));
   parte(textos, () => {
@@ -13968,10 +14263,12 @@ function turnoAdversario() {
     fin.anuncios.forEach(t => apunta("Ronda", t));
     J.hechos.clear(); J.turno = null;
     pon("ambiente");
-    if (!e.desenlace) {
+    if (!e.desenlace && e.mazoEventos) {
       const ev = M.robarEvento(e);
       ev.anuncios.forEach(t => apunta("Evento", t));
-      if (ev.ok) fin.anuncios.push(...ev.anuncios);
+      const dec = M.resolverEventoAdversario(e, J.rnd);
+      dec.anuncios.forEach(t => apunta("Evento", t));
+      fin.anuncios.push(...ev.anuncios, ...dec.anuncios);
     }
     refrescar(); guardar();
     comprobarFinal();
@@ -13980,9 +14277,12 @@ function turnoAdversario() {
 
 // ─────────────────────────────── diálogos
 
-function parte(textos, alCerrar) {
-  $("modalTitulo").textContent = "Parte del Adversario";
-  $("modalCuerpo").innerHTML = "<ul class='parte'>" + textos.map(t => `<li>${t}</li>`).join("") + "</ul>";
+function parte(textos, alCerrar, color) {
+  const c = color || ROJO;
+  $("modalTitulo").textContent = c === VERDE ? "Habéis encontrado algo" : "Parte del Adversario";
+  $("modalTitulo").style.color = c;
+  $("modalCuerpo").innerHTML = "<ul class='parte'>" +
+    textos.map(t => `<li style="border-left-color:${c}">${t}</li>`).join("") + "</ul>";
   $("modalOk").textContent = "Entendido";
   $("modalCancelar").hidden = true;
   $("modal").hidden = false;
@@ -14072,13 +14372,16 @@ function dibujar() {
     ctx.fillStyle = "#E8E3D4"; ctx.fill();
     ctx.strokeStyle = "#111"; ctx.lineWidth = 2 * k; ctx.stroke();
   }
+  for (const c of (e.delatoras || [])) marca(c, "#C9C06F", "♪");
+  for (const c of (e.barricadas || [])) marca(c, "#8A9A8C", "▮");
   for (const s of e.sombras) marca(s, "#8C7BD6", "S");
   for (const o of (e.ojos || [])) marca(o, "#C58BE0", "\u25c9");
   for (const j of J.jugadores) {
     const inv = e.investigadores.find(x => x.id === j.inv);
-    marca(inv.casilla, "#6FD6C0", j.nombre.slice(0, 2).toUpperCase());
+    if (inv.escapado || inv.muerto) continue;
+    marca(inv.casilla, colorDe(j.nombre), j.nombre.slice(0, 2).toUpperCase());
   }
-  if (!e.adversario.oculto) marca(e.adversario.casilla, "#B4432E", "ADV");
+  if (!e.adversario.oculto) marca(e.adversario.casilla, ROJO, "ADV");
 
   function marca(id, color, texto) {
     const n = e.mapa.casillas.get(id); if (!n) return;
@@ -14122,7 +14425,8 @@ cv.addEventListener("wheel", ev => {
 function serializar() {
   const e = J.estado;
   return JSON.stringify({
-    v: 1, nivel: J.nivel, semilla: J.semilla, jugadores: J.jugadores,
+    v: 1, nivel: J.nivel, semilla: J.semilla, jugadores: J.jugadores, secreto: J.secreto,
+    colores: J.colores,
     cartas: J.estado.adversario.cartas,
     hechos: [...J.hechos], bitacora: J.bitacora,
     estado: {
@@ -14133,6 +14437,8 @@ function serializar() {
       zonasEncendidas: [...e.zonasEncendidas], linternas: e.linternas,
       ruido: [...e.ruido], sombras: e.sombras, ojos: e.ojos || [],
       evidencias: e.evidencias, escape: e.escape, desenlace: e.desenlace,
+      lucesFundidas: [...e.lucesFundidas], delatoras: e.delatoras, barricadas: e.barricadas,
+      zonasAtenuadas: [...e.zonasAtenuadas], pasadizos: e.pasadizos,
       mazoEventos: e.mazoEventos, eventoActual: e.eventoActual,
       eventosPermanentes: e.eventosPermanentes, destierro: e.destierro || null,
       habilidades: e.adversario.habilidades, recarga: e.adversario.recarga,
@@ -14153,6 +14459,9 @@ function recuperar(texto) {
     ocultos: d.estado.ocultos, zonasEncendidas: new Set(d.estado.zonasEncendidas),
     linternas: d.estado.linternas, ruido: new Set(d.estado.ruido),
     sombras: d.estado.sombras || [], ojos: d.estado.ojos || [],
+    lucesFundidas: new Set(d.estado.lucesFundidas || []),
+    zonasAtenuadas: new Set(d.estado.zonasAtenuadas || []), pasadizos: d.estado.pasadizos || [],
+    delatoras: d.estado.delatoras || [], barricadas: d.estado.barricadas || [],
     evidencias: d.estado.evidencias || 0, escape: d.estado.escape || null,
     desenlace: d.estado.desenlace || null, mazoEventos: d.estado.mazoEventos || [],
     eventoActual: d.estado.eventoActual || null,
@@ -14164,12 +14473,65 @@ function recuperar(texto) {
   estado.adversario.recarga = d.estado.recarga || {};
   estado.adversario.acechadosEstaRonda = new Set();
   estado.adversario.atacadosEsteTurno = new Set();
-  J = { estado, jugadores: d.jugadores, semilla: d.semilla, rnd: IA.azar(d.semilla + d.estado.ronda),
-        nivel: d.nivel, turno: null, hechos: new Set(d.hechos), bitacora: d.bitacora, borrador: null };
+  J = { estado, jugadores: d.jugadores, semilla: d.semilla, colores: d.colores || {},
+        rnd: IA.azar(d.semilla + d.estado.ronda),
+        nivel: d.nivel, turno: null, hechos: new Set(d.hechos), bitacora: d.bitacora,
+        secreto: d.secreto || [], borrador: null };
   pintarLog();
   $("preparacion").hidden = true; $("partida").hidden = false;
   redimensionar(); encuadrar(); refrescar();
 }
+
+// ─────────────────────────────── tutorial
+
+const TUTORIAL = `
+<h4 style="color:var(--lantern);margin:0 0 6px">Qué hace la app</h4>
+<p>Lleva al Adversario. Esconde la Evidencia, mueve en secreto, Acecha y ataca.
+Vosotros jugáis con el tablero de verdad y le contáis a la app solo dos cosas:
+<b>dónde acaba cada investigador</b> y <b>qué casillas ilumina su linterna</b>.</p>
+
+<h4 style="color:var(--lantern);margin:14px 0 6px">La ronda, paso a paso</h4>
+<ol style="margin:0;padding-left:18px;line-height:1.6">
+<li>La app roba el Evento y lo deja a la vista arriba del todo.</li>
+<li>El que vaya a jugar <b>se pulsa a sí mismo</b> en la lista. Podéis ir en el orden que queráis.</li>
+<li>Pulsa en el tablero <b>la casilla donde termina</b>. Ya está en ese modo al entrar.</li>
+<li>Si coloca linterna: <b>Marcar casillas</b>, las vas tocando y <b>Validar selección</b>.
+    La app avisa si alguna queda tapada por un obstáculo, pero no te lo impide.</li>
+<li>Si toca puerta, interruptor, Evidencia o herida, están ahí mismo en su panel.</li>
+<li><b>Validar y terminar turno</b>. Te enseña un resumen y te pregunta.
+    Hasta ese momento puedes cambiar lo que quieras; después ya no, y ese jugador no vuelve a jugar esa ronda.</li>
+<li>Cuando han jugado todos, se desbloquea <b>Turno del Adversario</b>. Pulsa y lee el parte en voz alta.</li>
+</ol>
+
+<h4 style="color:var(--lantern);margin:14px 0 6px">Qué significa cada color</h4>
+<p><span style="color:#E86A52">Rojo</span>: el Adversario. Ruidos, Sombras, Acechos, ataques.<br>
+<span style="color:#6FD68C">Verde</span>: lo que encontráis. Evidencia, Puntos de Interés, la Tumba.<br>
+<span style="color:#F0B43C">Ámbar</span>: el Evento de la ronda.<br>
+Cada investigador tiene además su propio color, el mismo en la lista, en su panel y en su ficha del tablero.</p>
+
+<h4 style="color:var(--lantern);margin:14px 0 6px">Dos detalles que conviene saber</h4>
+<p><b>Nada se destapa hasta que validas el turno.</b> Puedes mover la linterna las veces que quieras
+sin que la app te cante lo que hay debajo.</p>
+<p><b>El Barrido de Mitchell</b> está contemplado: coloca la linterna, pulsa <i>Barrer</i>,
+la app destapa lo de esa primera posición y te deja apuntar a un segundo sitio, que es donde se queda.</p>
+
+<h4 style="color:var(--lantern);margin:14px 0 6px">Al terminar</h4>
+<p>Se abre la bitácora completa y puedes descargarla en texto, con todo lo que hizo el Adversario
+a escondidas: por dónde pasó cada ronda, qué cartas llevaba y dónde estaba la Tumba.</p>
+
+<p style="color:var(--moss)">El tablero se mueve arrastrando y se acerca con la rueda o con dos dedos.
+<b>Encuadrar</b> lo recoloca si te pierdes.</p>`;
+
+function verTutorial() {
+  $("modalTitulo").textContent = "Cómo se juega con la app";
+  $("modalTitulo").style.color = "";
+  $("modalCuerpo").innerHTML = `<div style="max-height:62vh;overflow:auto;line-height:1.5">${TUTORIAL}</div>`;
+  $("modalOk").textContent = "Entendido"; $("modalOk").hidden = false;
+  $("modalCancelar").hidden = true; $("modal").hidden = false;
+  $("modalOk").onclick = () => { $("modal").hidden = true; };
+}
+$("btnTutorial").onclick = verTutorial;
+$("btnAyuda").onclick = verTutorial;
 
 // ─────────────────────────────── avisos de error
 
