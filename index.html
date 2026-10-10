@@ -13451,8 +13451,16 @@ function desaparecer(estado) {
 // ─────────────────────────────────────────────── luces y turno de investigadores
 
 /** Coloca una linterna. Las casillas iluminadas las deciden los jugadores en mesa. */
-function ponerLinterna(estado, idInv, casillas) {
-  estado.linternas.push({ de: idInv, casillas: casillas.slice() });
+/**
+ * Al colocar la linterna, la casilla del propio Investigador queda Brillante
+ * siempre: el manual lo dice expresamente, aunque la plantilla no la cubra.
+ */
+function ponerLinterna(estado, idInv, casillas, desde) {
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  const propia = desde || (inv && inv.casilla);
+  const lista = casillas.slice();
+  if (propia && !lista.includes(propia)) lista.push(propia);
+  estado.linternas.push({ de: idInv, casillas: lista });
   return revisarRevelado(estado);
 }
 /**
@@ -13471,14 +13479,31 @@ function encenderZona(estado, zona) {
 function cerrarPuerta(estado, id) {
   if (estado.mapa.casillas.get(id)?.type !== "door") return resultado(false, `${id} no es una puerta`);
   const actual = estado.puertas[id] || "abierta";
+  if (actual === "destruida") return resultado(false, "una Puerta Destruida no se puede volver a cerrar");
   if (actual !== "abierta") return resultado(false, `esa puerta está ${actual}`);
+  if (estado.investigadores.some(i => i.casilla === id && !i.muerto && !i.escapado))
+    return resultado(false, "hay un Investigador en esa casilla de Puerta");
   estado.puertas[id] = "cerrada";
   const anuncios = [];
   if (estado.adversario.casilla === id) {
     estado.adversario.oculto = false;
+    // sale a la casilla contigua que más le conviene: lo más oscura y lejos de ellos
     const salidas = vecinasDe(estado, id).map(v => v.id);
-    anuncios.push(anuncia(estado, `¡El Adversario estaba en ${id}! Queda Revelado y sale a ${salidas[0] || "la casilla contigua"}.`));
-    if (salidas.length) estado.adversario.casilla = salidas[0];
+    let mejor = null, puntos = -1e9;
+    for (const c of salidas) {
+      const luz = luzDe(estado, c);
+      let p = luz === "oscura" ? 2 : luz === "tenue" ? 1 : -5;
+      let cerca = 99;
+      for (const i of estado.investigadores) {
+        const d = distancia(estado, c, i.casilla);
+        if (d !== null && d < cerca) cerca = d;
+      }
+      p += Math.min(cerca, 6);
+      if (p > puntos) { puntos = p; mejor = c; }
+    }
+    if (mejor) estado.adversario.casilla = mejor;
+    anuncios.push(anuncia(estado,
+      `¡El Adversario estaba en ${id}! Queda Revelado y sale a ${mejor || "la casilla contigua"}.`));
   }
   return resultado(true, null, anuncios);
 }
@@ -14347,11 +14372,35 @@ function pintarPanelTurno() {
     refrescar();
   };
   $("btnPenumbra").onclick = () => {
-    const z = J.estado.mapa.casillas.get(b.destino)?.zone;
-    if (!z) { alerta("Esa casilla no pertenece a ninguna Zona."); return; }
-    J.estado.zonasAtenuadas.add(z);
-    apunta(j.nombre, `Coloca la ficha de Penumbra en la Zona ${z}: pasa a Tenue.`);
-    refrescar();
+    // el manual permite la Zona en la que estás o una adyacente
+    const e = J.estado;
+    const propias = new Set();
+    const z0 = e.mapa.casillas.get(b.destino)?.zone;
+    if (z0) propias.add(z0);
+    for (const v of M.vecinasDe(e, b.destino, { ignorarPuertas: true })) {
+      const z = e.mapa.casillas.get(v.id)?.zone;
+      if (z) propias.add(z);
+    }
+    const zonas = [...propias].filter(z => !e.zonasAtenuadas.has(z));
+    if (!zonas.length) { alerta("Desde ahí no alcanzas ninguna Zona sin Penumbra."); return; }
+    if (zonas.length === 1) {
+      e.zonasAtenuadas.add(zonas[0]);
+      apunta(j.nombre, `Coloca la ficha de Penumbra en la Zona ${zonas[0]}: pasa a Tenue.`);
+      refrescar(); return;
+    }
+    $("modalTitulo").textContent = "¿En qué Zona?";
+    $("modalTitulo").style.color = "";
+    $("modalCuerpo").innerHTML = zonas.map(z =>
+      `<button class="btn zonaP" data-z="${z}" style="width:100%;margin-bottom:6px">Zona ${z}</button>`).join("");
+    $("modalOk").hidden = true; $("modalCancelar").hidden = false;
+    $("modal").hidden = false;
+    $("modalCancelar").onclick = () => { $("modal").hidden = true; $("modalOk").hidden = false; };
+    $("modalCuerpo").querySelectorAll(".zonaP").forEach(bt => bt.onclick = () => {
+      e.zonasAtenuadas.add(bt.dataset.z);
+      $("modal").hidden = true; $("modalOk").hidden = false;
+      apunta(j.nombre, `Coloca la ficha de Penumbra en la Zona ${bt.dataset.z}: pasa a Tenue.`);
+      refrescar();
+    });
   };
   $("btnPasadizo").onclick = () => {
     if (!J.pasadizoPendiente) {
@@ -14437,10 +14486,11 @@ function validarLinterna() {
   const tapadas = [...seleccion].filter(id => !M.hayVision(J.estado, b.destino, id));
   const sigue = () => {
     b.linterna = [...seleccion];
+    if (!b.linterna.includes(b.destino)) b.linterna.push(b.destino);   // su casilla siempre
     J.estado.linternas = J.estado.linternas.filter(l => l.de !== j.inv);
     // se alumbra, pero no se destapa nada hasta que el turno quede validado
     J.estado.linternas.push({ de: j.inv, casillas: b.linterna.slice() });
-    apunta(j.nombre, `Coloca la linterna sobre ${b.linterna.join(", ")}.`);
+    apunta(j.nombre, `Coloca la linterna sobre ${b.linterna.join(", ")} (su casilla incluida).`);
     modo = null; seleccion.clear(); refrescar();
   };
   if (tapadas.length)

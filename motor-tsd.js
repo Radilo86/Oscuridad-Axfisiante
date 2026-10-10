@@ -1093,8 +1093,16 @@ function desaparecer(estado) {
 // ─────────────────────────────────────────────── luces y turno de investigadores
 
 /** Coloca una linterna. Las casillas iluminadas las deciden los jugadores en mesa. */
-function ponerLinterna(estado, idInv, casillas) {
-  estado.linternas.push({ de: idInv, casillas: casillas.slice() });
+/**
+ * Al colocar la linterna, la casilla del propio Investigador queda Brillante
+ * siempre: el manual lo dice expresamente, aunque la plantilla no la cubra.
+ */
+function ponerLinterna(estado, idInv, casillas, desde) {
+  const inv = estado.investigadores.find(i => i.id === idInv);
+  const propia = desde || (inv && inv.casilla);
+  const lista = casillas.slice();
+  if (propia && !lista.includes(propia)) lista.push(propia);
+  estado.linternas.push({ de: idInv, casillas: lista });
   return revisarRevelado(estado);
 }
 /**
@@ -1113,14 +1121,31 @@ function encenderZona(estado, zona) {
 function cerrarPuerta(estado, id) {
   if (estado.mapa.casillas.get(id)?.type !== "door") return resultado(false, `${id} no es una puerta`);
   const actual = estado.puertas[id] || "abierta";
+  if (actual === "destruida") return resultado(false, "una Puerta Destruida no se puede volver a cerrar");
   if (actual !== "abierta") return resultado(false, `esa puerta está ${actual}`);
+  if (estado.investigadores.some(i => i.casilla === id && !i.muerto && !i.escapado))
+    return resultado(false, "hay un Investigador en esa casilla de Puerta");
   estado.puertas[id] = "cerrada";
   const anuncios = [];
   if (estado.adversario.casilla === id) {
     estado.adversario.oculto = false;
+    // sale a la casilla contigua que más le conviene: lo más oscura y lejos de ellos
     const salidas = vecinasDe(estado, id).map(v => v.id);
-    anuncios.push(anuncia(estado, `¡El Adversario estaba en ${id}! Queda Revelado y sale a ${salidas[0] || "la casilla contigua"}.`));
-    if (salidas.length) estado.adversario.casilla = salidas[0];
+    let mejor = null, puntos = -1e9;
+    for (const c of salidas) {
+      const luz = luzDe(estado, c);
+      let p = luz === "oscura" ? 2 : luz === "tenue" ? 1 : -5;
+      let cerca = 99;
+      for (const i of estado.investigadores) {
+        const d = distancia(estado, c, i.casilla);
+        if (d !== null && d < cerca) cerca = d;
+      }
+      p += Math.min(cerca, 6);
+      if (p > puntos) { puntos = p; mejor = c; }
+    }
+    if (mejor) estado.adversario.casilla = mejor;
+    anuncios.push(anuncia(estado,
+      `¡El Adversario estaba en ${id}! Queda Revelado y sale a ${mejor || "la casilla contigua"}.`));
   }
   return resultado(true, null, anuncios);
 }
